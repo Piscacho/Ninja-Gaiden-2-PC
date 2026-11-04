@@ -1,0 +1,34 @@
+# ---- Archivos del juego: NUNCA se suben ----
+*.iso
+*.xex
+xex/
+basefile.bin
+dlc/
+*.xcd
+# Codigo generado a partir del ejecutable del juego (cada uno lo genera desde su ISO)
+ppc/
+ppc_viejos/
+*.bin
+*.cso
+*.raw
+
+# ---- Herramientas externas, referencias y salidas de compilacion ----
+XenonRecomp/
+ref/
+ref_xenia/
+runtime_gh_orig/
+project/build/
+project/build_*/
+release_staging/
+dist/
+
+# ---- Pruebas, capturas y registros ----
+run/
+logs/
+*.png
+*.bmp
+*.wav
+*.log
+*.zip
+*.old
+__pycache__/

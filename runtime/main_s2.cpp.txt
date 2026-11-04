@@ -1,0 +1,100 @@
+// Punto de entrada del ejecutable PC (sesion 2: runtime minimo).
+// Prepara la memoria de invitado, registra las funciones traducidas y salta a _xstart.
+// Todos los imports son stubs (import_stubs.cpp): se espera que el juego se pare pronto; el kernel llega en la sesion 3.
+#include "runtime.h"
+#include <ppc_recomp_shared.h>
+#include <windows.h>
+#include <algorithm>
+#include <fstream>
+#include <vector>
+
+uint8_t* g_base = nullptr;
+extern PPCFuncMapping PPCFuncMappings[];
+
+static std::vector<uint8_t> ReadFile(const char* path)
+{
+    std::ifstream f(path, std::ios::binary);
+    return std::vector<uint8_t>((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+}
+
+// ---- diagnostico: direccion host -> funcion de invitado ----
+static std::vector<std::pair<uintptr_t, uint32_t>> g_hostToGuest;
+static uint32_t GuestFunctionAt(uintptr_t host)
+{
+    auto it = std::upper_bound(g_hostToGuest.begin(), g_hostToGuest.end(), std::make_pair(host, 0xFFFFFFFFu));
+    return it == g_hostToGuest.begin() ? 0 : std::prev(it)->second;
+}
+
+static LONG CALLBACK CrashHandler(EXCEPTION_POINTERS* e)
+{
+    auto* r = e->ExceptionRecord;
+    if (r->ExceptionCode == 0x406D1388 || r->ExceptionCode == 0x40010006 || r->ExceptionCode == 0x4001000A || r->ExceptionCode == 0xE06D7363)
+        return EXCEPTION_CONTINUE_SEARCH;
+    uintptr_t mod = (uintptr_t)GetModuleHandleW(nullptr);
+    uintptr_t acc = r->NumberParameters > 1 ? r->ExceptionInformation[1] : 0;
+    LOG("[crash] excepcion 0x%08lX en NG2.exe+0x%llX, funcion de invitado aprox. sub_%08X, acceso a 0x%llX (invitado 0x%llX)",
+        r->ExceptionCode, (unsigned long long)((uintptr_t)r->ExceptionAddress - mod), GuestFunctionAt((uintptr_t)r->ExceptionAddress),
+        (unsigned long long)acc, (unsigned long long)(acc - (uintptr_t)g_base));
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+// Llamada indirecta (compat/ppc_indirect.h): avisa si el destino no tiene funcion traducida.
+void GuestCallIndirect(PPCContext& ctx, uint8_t* base, uint32_t target)
+{
+    PPCFunc* f = (target >= PPC_CODE_BASE && target < PPC_CODE_BASE + PPC_CODE_SIZE) ? PPC_LOOKUP_FUNC(base, target) : nullptr;
+    if (!f)
+    {
+        LOG("[indirecta] destino sin funcion: 0x%08X (lr=0x%08llX)", target, (unsigned long long)ctx.lr);
+        ExitProcess(3);
+    }
+    f(ctx, base);
+}
+
+// Variables importadas: memoria a cero en una zona propia; el descriptor de .rdata pasa a apuntar a ella.
+struct VarImport { uint32_t slot; const char* name; uint32_t size; };
+static const VarImport kVarImports[] = {
+#include "var_imports.inc"
+};
+
+int main(int argc, char** argv)
+{
+    AddVectoredExceptionHandler(1, CrashHandler);
+    const char* imgPath = argc > 1 ? argv[1] : "basefile.bin";
+    std::vector<uint8_t> image = ReadFile(imgPath);
+    if (image.size() > PPC_IMAGE_SIZE || image.empty())
+    {
+        LOG("Imagen invalida: %s (%zu bytes, maximo %u)", imgPath, image.size(), (unsigned)PPC_IMAGE_SIZE);
+        return 1;
+    }
+
+    g_base = (uint8_t*)VirtualAlloc(nullptr, PPC_MEMORY_SIZE, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    if (!g_base) { LOG("No se pudieron reservar 4 GB de memoria de invitado"); return 1; }
+    memcpy(g_base + PPC_IMAGE_BASE, image.data(), image.size());
+
+    size_t n = 0;
+    for (auto* m = PPCFuncMappings; m->host != nullptr; ++m, ++n)
+    {
+        PPC_LOOKUP_FUNC(g_base, m->guest) = m->host;
+        g_hostToGuest.emplace_back((uintptr_t)m->host, (uint32_t)m->guest);
+    }
+    std::sort(g_hostToGuest.begin(), g_hostToGuest.end());
+    LOG("[runtime] %zu funciones registradas", n);
+
+    uint32_t varArea = kXexHeaderGuest + 0x10000;
+    for (const auto& v : kVarImports)
+    {
+        Store32(v.slot, varArea);
+        varArea += (v.size + 0xF) & ~0xFu;
+    }
+
+    // Pila del hilo principal justo debajo de 0x70000000 (provisional)
+    static PPCContext ctx{};
+    const uint32_t stackTop = 0x70000000;
+    ctx.r1.u64 = stackTop - 0x100;
+    ctx.r13.u64 = 0x6FF00000;   // PCR provisional (sin inicializar); se hara bien en la sesion 3
+
+    LOG("[runtime] saltando a _xstart (0x%08X)", kEntryPoint);
+    _xstart(ctx, g_base);
+    LOG("[runtime] _xstart ha vuelto (r3=0x%X)", ctx.r3.u32);
+    return 0;
+}

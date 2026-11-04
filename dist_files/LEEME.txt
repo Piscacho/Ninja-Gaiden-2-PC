@@ -1,0 +1,45 @@
+Ninja Gaiden II - recompilado para PC (Windows 10/11, DirectX 12)
+=================================================================
+
+Necesitas tu propio ISO de Ninja Gaiden II para Xbox 360 (version World,
+titulo 544307D5). Este paquete NO incluye ningun archivo del juego.
+
+Primer arranque
+---------------
+1. Ejecuta NG2.exe. Si ng2.ini no tiene ruta al ISO, se abre un dialogo para elegirlo.
+2. La ruta se guarda en ng2.ini. Las partidas se guardan en la carpeta "userdata".
+3. DLC: copia tus paquetes de Xbox 360 (archivos LIVE/CON) en la carpeta "dlc".
+   Se importan solos al arrancar. Funcionan los trajes Biometal, Fiend y
+   Shadow Walker Hayabusa. Mission Mode necesita la actualizacion del titulo,
+   que no esta soportada.
+
+Controles
+---------
+Mando de Xbox (XInput) o de PlayStation: como en la consola.
+Teclado (con la ventana del juego activa):
+  WASD          moverse (stick izquierdo)
+  I J K L       camara (stick derecho)
+  Espacio       saltar (A)
+  F             golpe rapido (X)
+  R             golpe fuerte (Y)
+  E             proyectil (B)
+  Q             bloquear (RT)
+  Z             LT
+  C / V         LB / RB (ninpo)
+  Flechas       cruceta / menus
+  Enter         START (pausa)
+  Retroceso     BACK
+  Esc           B (cancelar en menus)
+En el titulo, pulsa A (Espacio) para entrar en el menu principal.
+
+Opciones (ng2.ini)
+------------------
+  perfil=1      con perfil: el juego guarda (0 = sin perfil, sin guardado)
+  vibracion=1   vibracion del mando (0 = sin vibracion)
+
+Problemas conocidos
+-------------------
+- La primera vez que aparece cada efecto puede haber un pequeno tiron
+  (se compilan los shaders; luego quedan en "shadercache").
+- El pelo de algunos personajes no se dibuja y faltan las particulas.
+- El registro de la ultima partida esta en ng2.log (util para informar de fallos).

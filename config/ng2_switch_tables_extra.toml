@@ -1,0 +1,279 @@
+# Generado por tools/jt_finder.py
+[[switch]]
+base = 0x8248F9A0
+r = 11
+default = 0x8248FE64
+labels = [
+    0x8248F9DC,
+    0x8248F9D0,
+    0x8248FB64,
+    0x8248FB58,
+    0x8248FCEC,
+    0x8248FCE0,
+]
+
+[[switch]]
+base = 0x823F58FC
+r = 26
+default = 0x823F7C1C
+labels = [
+    0x823F7C1C,
+    0x823F7C8C,
+    0x823F5A80,
+    0x823F5AAC,
+    0x823F5B60,
+    0x823F5BB8,
+    0x823F5BE0,
+    0x823F5E78,
+    0x823F5C84,
+    0x823F5C8C,
+    0x823F5CBC,
+    0x823F5D20,
+    0x823F5D3C,
+    0x823F5D54,
+    0x823F5DB0,
+    0x823F5DDC,
+    0x823F5E10,
+    0x823F5E24,
+    0x823F5E84,
+    0x823F5ED8,
+    0x823F5F00,
+    0x823F60CC,
+    0x823F6134,
+    0x823F6140,
+    0x823F61A8,
+    0x823F61C8,
+    0x823F61F8,
+    0x823F6218,
+    0x823F6298,
+    0x823F62B0,
+    0x823F632C,
+    0x823F6348,
+    0x823F6414,
+    0x823F6460,
+    0x823F649C,
+    0x823F64DC,
+    0x823F64FC,
+    0x823F6964,
+    0x823F698C,
+    0x823F60CC,
+    0x823F62EC,
+    0x823F6A44,
+    0x823F6AF8,
+    0x823F6B2C,
+    0x823F6B68,
+    0x823F6BB8,
+    0x823F5E78,
+    0x823F6C88,
+    0x823F6CD0,
+    0x823F6D08,
+    0x823F6D30,
+    0x823F6DC0,
+    0x823F6DFC,
+    0x823F6E28,
+    0x823F6EF8,
+    0x823F716C,
+    0x823F7224,
+    0x823F7364,
+    0x823F6BB8,
+    0x823F6E28,
+    0x823F73C8,
+    0x823F73F4,
+    0x823F6DFC,
+    0x823F7420,
+    0x823F744C,
+    0x823F7484,
+    0x823F74E4,
+    0x823F74E4,
+    0x823F7588,
+    0x823F75E8,
+    0x823F7600,
+    0x823F7618,
+    0x823F7650,
+    0x823F77DC,
+    0x823F7828,
+    0x823F78EC,
+    0x823F7934,
+    0x823F7950,
+    0x823F7974,
+    0x823F79AC,
+    0x823F79F0,
+    0x823F7A4C,
+    0x823F7A94,
+    0x823F6EF8,
+]
+
+[[switch]]
+base = 0x82416060
+r = 10
+default = 0x82416094
+labels = [
+    0x82416094,
+    0x824160AC,
+    0x824160AC,
+    0x824160AC,
+    0x8241618C,
+    0x824161E4,
+    0x824162B4,
+]
+
+[[switch]]
+base = 0x824223C4
+r = 9
+default = 0x824223F0
+labels = [
+    0x824223F0,
+    0x82422478,
+    0x82422500,
+    0x82422588,
+    0x82422610,
+]
+
+[[switch]]
+base = 0x82424220
+r = 10
+default = 0x82424394
+labels = [
+    0x82424394,
+    0x82424248,
+    0x82424360,
+    0x82424394,
+]
+
+[[switch]]
+base = 0x824245D4
+r = 10
+default = 0x824246B0
+labels = [
+    0x824246B0,
+    0x824245FC,
+    0x824246E0,
+    0x824246B0,
+]
+
+[[switch]]
+base = 0x824249FC
+r = 10
+default = 0x82424A88
+labels = [
+    0x82424A88,
+    0x82424A28,
+    0x82424A54,
+    0x82424A88,
+    0x82424A88,
+]
+
+[[switch]]
+base = 0x824265E8
+r = 4
+default = 0x8242665C
+labels = [
+    0x8242665C,
+    0x8242670C,
+    0x82426720,
+    0x82426794,
+    0x824267F0,
+]
+
+[[switch]]
+base = 0x8242898C
+r = 11
+default = 0x824289B4
+labels = [
+    0x824289B4,
+    0x824289BC,
+    0x824289B4,
+    0x824289BC,
+]
+
+[[switch]]
+base = 0x82428C08
+r = 27
+default = 0x82428C34
+labels = [
+    0x82428C34,
+    0x82428C3C,
+    0x82428C44,
+    0x82428C4C,
+    0x82428C54,
+]
+
+[[switch]]
+base = 0x82440364
+r = 6
+default = 0x8244038C
+labels = [
+    0x8244038C,
+    0x8244041C,
+    0x82440470,
+    0x824404C4,
+]
+
+[[switch]]
+base = 0x8371BB64
+r = 8
+default = 0x8371BBA8
+labels = [
+    0x8371BBA8,
+    0x8371BBEC,
+    0x8371BC30,
+    0x8371BC70,
+    0x8371BBA8,
+    0x8371BBEC,
+    0x8371BC30,
+    0x8371BC70,
+    0x8371BCD4,
+    0x8371BCD4,
+    0x8371BCD4,
+]
+
+[[switch]]
+base = 0x8372A960
+r = 6
+default = 0x8372AA44
+labels = [
+    0x8372AA44,
+    0x8372A9E8,
+    0x8372AAF0,
+    0x8372A988,
+]
+
+[[switch]]
+base = 0x837FC15C
+r = 5
+default = 0x837FC184
+labels = [
+    0x837FC184,
+    0x837FC1C4,
+    0x837FC270,
+    0x837FC2B0,
+]
+
+[[switch]]
+base = 0x838D3E38
+r = 19
+default = 0x838D3EA4
+labels = [
+    0x838D3EA4,
+    0x838D3EA4,
+    0x838D4000,
+    0x838D3EA4,
+    0x838D3EA4,
+    0x838D3F8C,
+    0x838D3EA4,
+    0x838D3F18,
+    0x838D3EA4,
+    0x838D3EA4,
+    0x838D4000,
+    0x838D4000,
+    0x838D3EA4,
+    0x838D3EA4,
+    0x838D4000,
+    0x838D4000,
+    0x838D4000,
+    0x838D4000,
+    0x838D3EA4,
+    0x838D3EA4,
+    0x838D3EA4,
+]
+
