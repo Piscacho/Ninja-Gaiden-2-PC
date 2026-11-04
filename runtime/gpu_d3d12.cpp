@@ -1053,7 +1053,7 @@ bool BindTexture(uint32_t tf, D3D12_CPU_DESCRIPTOR_HANDLE slot)
     // Sesion 24: texturas resueltas por GPU en k_8 (copia 8888, canal rojo) o k_32_FLOAT (copia R32_FLOAT); mismo tamano exacto
     // Sesion 16 de NG2: tambien k_16_16_16_16_FLOAT y _EXPAND (mismos bits) desde el resolve por GPU de la escena HDR
     const uint32_t rfmt = fmt == 29 ? 32u : fmt;
-    if (fmt == 2 || fmt == 36 || (fmt == 25 && !signedOrExp) || ((fmt == 32 || fmt == 29) && !signedOrExp))
+    if (fmt == 2 || fmt == 36 || (fmt == 25 && !signedOrExp) || fmt == 32 || fmt == 29)   // half float: el signo y exp_adjust no se aplican (como al subir desde memoria)
     {
         uint64_t k = ResolvedKey(base, w, h) ^ ResolvedFmtTag(rfmt);
         auto last = g_resolvedLast.find(base);
@@ -1062,7 +1062,7 @@ bool BindTexture(uint32_t tf, D3D12_CPU_DESCRIPTOR_HANDLE slot)
             // Sesion 24: el resolve tiene otro tamano (p. ej. 112x207 leido como 110x207): copia de la region a una textura derivada
             // en la GPU (antes se volcaba a memoria esperando a la GPU: tirones de ~50 ms)
             auto srcIt = g_resolved.find(last->second);
-            if (srcIt != g_resolved.end() && srcIt->second.res && srcIt->second.texFmt == rfmt && w <= srcIt->second.w + 8 && h <= srcIt->second.h + 8 &&
+            if (rfmt != 32 && srcIt != g_resolved.end() && srcIt->second.res && srcIt->second.texFmt == rfmt && w <= srcIt->second.w + 8 && h <= srcIt->second.h + 8 &&
                 (srcIt->second.inMemory || MemHash(base) == srcIt->second.memHash))
             {
                 ResolvedTex& src = srcIt->second;
@@ -2104,8 +2104,8 @@ depthCpu:
         static const bool cpuFloat = getenv("NG2_CPUFLOATRESOLVE") != nullptr;
         if (!gpuTexFmt && !oldGpuResolve && !cpuFloat && rt->fmt == DXGI_FORMAT_R16G16B16A16_FLOAT && expBias == 0 && g_rtvHeap3)
         {
-            // fmt 32 por GPU aun sale negro (pendiente): solo con NG2_GPUF32=1; el 8888 desde float si funciona (NG2_NOGPUF6=1 lo quita)
-            static const bool no32 = getenv("NG2_GPUF32") == nullptr, no6 = getenv("NG2_NOGPUF6") != nullptr;
+            // NG2_NOGPUF32=1 / NG2_NOGPUF6=1: esos resolves vuelven a la CPU (sesion 17: el negro venia de la copia de region derivada)
+            static const bool no32 = getenv("NG2_NOGPUF32") != nullptr, no6 = getenv("NG2_NOGPUF6") != nullptr;
             if (fmt == 32 && !swapRB && g_colorResolvePso16F && !no32) { gpuTexFmt = 32; gpuShader = true; }
             else if (fmt == 6 && g_colorResolvePso && !no6) { gpuTexFmt = 6; gpuShader = true; }
         }
@@ -2395,7 +2395,14 @@ depthCpu:
 // Vuelca a la memoria del juego una textura resuelta por GPU (como el resolve por CPU: tiled 8888 con swapRB y endian del destino)
 static void WriteBackResolved(ResolvedTex& r)
 {
-    if (!r.res || r.inMemory || !g_readback || !r.destPitch) return;
+    if (!g_readback)
+    {   // sesion 17 de NG2: con los resolves por GPU puede no haberse creado aun (lo creaba el resolve por CPU)
+        D3D12_RESOURCE_DESC bd{}; bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER; bd.Width = 2048ull * 16 * kEdramH; bd.Height = 1; bd.DepthOrArraySize = 1; bd.MipLevels = 1;
+        bd.SampleDesc.Count = 1; bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        D3D12_HEAP_PROPERTIES rb{ D3D12_HEAP_TYPE_READBACK };
+        g_dev->CreateCommittedResource(&rb, D3D12_HEAP_FLAG_NONE, &bd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&g_readback));
+    }
+    if (!r.res || r.inMemory || !g_readback || !r.destPitch) { static int n = 0; if (n++ < 6) LOG("[writeback] omitido: res %d enMemoria %d readback %d pitch %u", (int)(r.res != nullptr), (int)r.inMemory, (int)(g_readback != nullptr), r.destPitch); return; }
     FlushPendingResolves();
     if (r.state != D3D12_RESOURCE_STATE_COPY_SOURCE) { auto b = Transition(r.res.Get(), r.state, D3D12_RESOURCE_STATE_COPY_SOURCE); ProbedBarrier(1, &b, __LINE__); r.state = D3D12_RESOURCE_STATE_COPY_SOURCE; }
     const UINT bpp = r.texFmt == 32 ? 8u : 4u;   // sesion 16 de NG2: k_16_16_16_16_FLOAT (8 bytes por pixel)
@@ -2534,8 +2541,7 @@ static void WriteBackResolvedForDraw(uint32_t mask)
         bool gpuOk = dim == 1 && ((fmt == 6 && r.texFmt == 6 && w <= r.w + 8 && h <= r.h + 8) ||     // directo o region derivada
                                   ((fmt == 2 || fmt == 36 || (fmt == 25 && ((fc0 >> 2) & 0x55) == 0 && ((Reg(0x4800 + t * 6 + 3) >> 13) & 0x3F) == 0)) &&
                                    r.texFmt == fmt && w <= r.w + 8 && h <= r.h + 8) ||   // sesion 24 (directo o region derivada)
-                                  ((fmt == 32 || fmt == 29) && r.texFmt == 32 && w <= r.w + 8 && h <= r.h + 8 &&   // sesion 16 de NG2
-                                   ((fc0 >> 2) & 0x55) == 0 && ((Reg(0x4800 + t * 6 + 3) >> 13) & 0x3F) == 0));   // sin signo ni exp_adjust
+                                  ((fmt == 32 || fmt == 29) && r.texFmt == 32 && w == r.w && h == r.h && !getenv("NG2_WB32")));   // sesion 16-17 de NG2: solo tamano exacto
         if (!gpuOk)
         {
             static std::unordered_map<uint64_t, int> seenWb;
