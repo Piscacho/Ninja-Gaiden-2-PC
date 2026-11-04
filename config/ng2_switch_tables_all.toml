@@ -8671,7 +8671,7 @@ labels = [
 
 [[switch]]
 base = 0x824215C0
-r = 9
+r = 6
 default = 0x824215B4
 labels = [
     0x824215F4,
@@ -8685,7 +8685,7 @@ labels = [
 
 [[switch]]
 base = 0x824220F4
-r = 11
+r = 10
 default = 0x82422160
 labels = [
     0x82422120,
@@ -8709,7 +8709,7 @@ labels = [
 
 [[switch]]
 base = 0x8242443C
-r = 6
+r = 10
 default = 0x824244F4
 labels = [
     0x824244F4,
