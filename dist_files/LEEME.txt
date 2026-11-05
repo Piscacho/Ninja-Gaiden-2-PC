@@ -41,5 +41,5 @@ Problemas conocidos
 -------------------
 - La primera vez que aparece cada efecto puede haber un pequeno tiron
   (se compilan los shaders; luego quedan en "shadercache").
-- El pelo de algunos personajes no se dibuja y faltan las particulas.
+- Mission Mode no funciona (necesita la actualizacion del titulo).
 - El registro de la ultima partida esta en ng2.log (util para informar de fallos).

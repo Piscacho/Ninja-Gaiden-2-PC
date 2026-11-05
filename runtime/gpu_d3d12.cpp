@@ -1894,6 +1894,16 @@ void FlushResolvesIfOverlap(uint32_t lo, uint32_t hi)
 
 } // namespace
 
+// Sesion 19 de NG2: bufer de lectura comun (resolve por CPU de color y profundidad, volcados). Antes solo lo creaba el resolve
+// de color por CPU: con los resolves float por GPU nunca se creaba y la copia de profundidad por CPU no se hacia (menus en negro)
+static void EnsureReadback()
+{
+    if (g_readback) return;
+    D3D12_RESOURCE_DESC bd{}; bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER; bd.Width = 2048ull * 16 * kEdramH; bd.Height = 1; bd.DepthOrArraySize = 1; bd.MipLevels = 1;
+    bd.SampleDesc.Count = 1; bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    D3D12_HEAP_PROPERTIES rb{ D3D12_HEAP_TYPE_READBACK };
+    g_dev->CreateCommittedResource(&rb, D3D12_HEAP_FLAG_NONE, &bd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&g_readback));
+}
 void Resolve()
 {
     uint32_t ctrl = Reg(0x2318), destBase = Reg(0x2319), destPitchReg = Reg(0x231A), destInfo = Reg(0x231B);
@@ -2014,6 +2024,7 @@ void Resolve()
         }
     }
 depthCpu:
+    if (depthSrc) EnsureReadback();
     if (depthSrc && g_readback)
     {
         FlushPendingResolves();
@@ -2105,7 +2116,7 @@ depthCpu:
         if (!gpuTexFmt && !oldGpuResolve && !cpuFloat && rt->fmt == DXGI_FORMAT_R16G16B16A16_FLOAT && expBias == 0 && g_rtvHeap3)
         {
             // NG2_NOGPUF32=1 / NG2_NOGPUF6=1: esos resolves vuelven a la CPU (sesion 17: el negro venia de la copia de region derivada)
-            static const bool no32 = getenv("NG2_NOGPUF32") != nullptr, no6 = getenv("NG2_NOGPUF6") != nullptr;
+            static const bool no32 = getenv("NG2_NOGPUF32") != nullptr, no6 = getenv("NG2_NOGPUF6") != nullptr;   // sesion 19: con los dos por GPU las capturas internas (DUMP) de menus salen negras, pero la ventana se ve bien
             if (fmt == 32 && !swapRB && g_colorResolvePso16F && !no32) { gpuTexFmt = 32; gpuShader = true; }
             else if (fmt == 6 && g_colorResolvePso && !no6) { gpuTexFmt = 6; gpuShader = true; }
         }
@@ -3304,6 +3315,8 @@ bool D3D12PresentResolved(HWND hwnd, uint32_t fb, std::vector<uint32_t>* readbac
         UINT rowPitch = (r.w * 4 + 255) & ~255u;
         D3D12_TEXTURE_COPY_LOCATION dst{ g_readback.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT }; dst.PlacedFootprint.Footprint = { DXGI_FORMAT_B8G8R8A8_UNORM, r.w, r.h, 1, rowPitch };
         D3D12_TEXTURE_COPY_LOCATION sl{ r.res.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX }; sl.SubresourceIndex = 0;
+        EnsureReadback();   // sesion 19: sin resolves por CPU no existia y las capturas salian negras
+        dst.pResource = g_readback.Get();
         if (g_readback)
         {
             g_list->CopyTextureRegion(&dst, 0, 0, 0, &sl, nullptr);

@@ -184,8 +184,11 @@ void EmitAlu(Gen& g, const uint32_t* w, bool isPs)
     case 20: case 21: case 22: case 23:
     {
         static const char* cmp[] = { "==", "!=", ">", ">=" };
-        g.L("p0 = ((%s).w %s 0.0) && ((%s).w %s 0.0);", a.c_str(), cmp[vop - 20], b.c_str(), cmp[vop - 20]);
-        v = "float4(0, 0, 0, 0)"; break;
+        // PRED_SETxx_PUSH (como Xenia): el primer operando es el contador de anidamiento. p0 = (a.w == 0 && b.w <op> 0);
+        // destino = p0 ? 0 : a.w + 1. Antes se comparaban los dos con el mismo operador y el destino era siempre 0: los
+        // predicados anidados (morph y skinning de los personajes) tomaban mal las ramas (sesion 19 de NG2: cascara de Sonia)
+        g.L("p0 = ((%s).w == 0.0) && ((%s).w %s 0.0);", a.c_str(), b.c_str(), cmp[vop - 20]);
+        v = "(p0 ? 0.0 : (" + a + ").w + 1.0).xxxx"; break;
     }
     case 24: case 25: case 26: case 27:
     {
