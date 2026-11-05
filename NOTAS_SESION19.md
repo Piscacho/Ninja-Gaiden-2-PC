@@ -51,5 +51,10 @@ Fecha: 2026-11-04. Sin commit de esta sesión todavía.
   SRV) y en el volcado a memoria de 2 bytes por píxel. Solo tamaño exacto; no pasa por la región derivada. `NG2_NOGPU565=1` = CPU.
   Una de las dos caídas del combate pasa de 46-53 a 55-58 fps. La otra (hacia el segundo 80 de `combate.txt`) es la transición
   de la cinemática al juego.
+- **Copia casi exacta de formato 32** («near32», `BindTexture`): si una textura `k_16_16_16_16_FLOAT` se lee hasta 8 texeles más
+  pequeña que su copia de la GPU (0x03EB0000: 280×146 sobre 281×146), se usa la copia de la GPU directamente (el borde sobrante
+  no se muestrea). `WriteBackResolvedForDraw` ya no la vuelca a memoria en cada frame. `NG2_NONEAR32=1` = antes. Combate y
+  cinemática de Sonia correctos (`run/montage76.png`, `run/montage77.png`). Queda un volcado por frame: 0x046D0000 (formato 25,
+  se lee a 1024 y se copia a 512).
 - Perfil de esas caídas: el hilo de la GPU solo está ocupado el 32 %; el hilo principal y un hilo de trabajo del juego (sub_822F0BF8)
   están siempre ocupados (puede ser espera activa del propio juego). Lo que queda por frame lento: ~9 ms de texturas.

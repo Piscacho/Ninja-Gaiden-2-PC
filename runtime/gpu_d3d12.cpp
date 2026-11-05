@@ -1063,6 +1063,26 @@ bool BindTexture(uint32_t tf, D3D12_CPU_DESCRIPTOR_HANDLE slot)
     {
         uint64_t k = ResolvedKey(base, w, h) ^ ResolvedFmtTag(rfmt);
         auto last = g_resolvedLast.find(base);
+        // Sesion 19 (2): k_16_16_16_16_FLOAT leida con unos pocos texeles menos que la copia (281 -> 280): se enlaza la copia de la GPU
+        // tal cual (la region derivada no funciona con 8 bytes por pixel y el volcado a memoria esperaba a la GPU en cada frame)
+        static const bool noNear32 = getenv("NG2_NONEAR32") != nullptr;
+        if (rfmt == 32 && !noNear32 && last != g_resolvedLast.end() && last->second != k)
+        {
+            auto nIt = g_resolved.find(last->second);
+            if (nIt != g_resolved.end() && nIt->second.res && nIt->second.texFmt == 32 && w <= nIt->second.w && h <= nIt->second.h &&
+                w + 8 >= nIt->second.w && h + 8 >= nIt->second.h && (nIt->second.inMemory || MemHash(base) == nIt->second.memHash))
+            {
+                ResolvedTex& r = nIt->second;
+                if (r.state != D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)
+                { auto b = Transition(r.res.Get(), r.state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE); ProbedBarrier(1, &b, __LINE__); r.state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE; }
+                uint32_t swz = (fc[3] >> 1) & 0xFFF;
+                auto map = [&](uint32_t c) -> UINT { return c < 4 ? HostRep(fmt, c) : (c == 4 ? D3D12_SHADER_COMPONENT_MAPPING_FORCE_VALUE_0 : D3D12_SHADER_COMPONENT_MAPPING_FORCE_VALUE_1); };
+                D3D12_SHADER_RESOURCE_VIEW_DESC sd{}; sd.Format = r.fmt; sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D; sd.Texture2D.MipLevels = 1;
+                sd.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(map(swz & 7), map((swz >> 3) & 7), map((swz >> 6) & 7), map((swz >> 9) & 7));
+                g_dev->CreateShaderResourceView(r.res.Get(), &sd, slot);
+                return true;
+            }
+        }
         if (last != g_resolvedLast.end() && last->second != k)
         {
             // Sesion 24: el resolve tiene otro tamano (p. ej. 112x207 leido como 110x207): copia de la region a una textura derivada
@@ -2580,7 +2600,7 @@ static void WriteBackResolvedForDraw(uint32_t mask)
         bool gpuOk = dim == 1 && ((fmt == 6 && r.texFmt == 6 && w <= r.w + 8 && h <= r.h + 8) ||     // directo o region derivada
                                   ((fmt == 2 || fmt == 36 || (fmt == 25 && ((fc0 >> 2) & 0x55) == 0 && ((Reg(0x4800 + t * 6 + 3) >> 13) & 0x3F) == 0)) &&
                                    r.texFmt == fmt && w <= r.w + 8 && h <= r.h + 8) ||   // sesion 24 (directo o region derivada)
-                                  ((fmt == 32 || fmt == 29) && r.texFmt == 32 && w == r.w && h == r.h && !getenv("NG2_WB32")) ||   // sesion 16-17 de NG2: solo tamano exacto
+                                  ((fmt == 32 || fmt == 29) && r.texFmt == 32 && w <= r.w && h <= r.h && w + 8 >= r.w && h + 8 >= r.h && !getenv("NG2_WB32") && !getenv("NG2_NONEAR32")) ||   // sesion 16-19 de NG2
                                   (fmt == 4 && r.texFmt == 4 && w == r.w && h == r.h));   // sesion 19
         if (!gpuOk)
         {
