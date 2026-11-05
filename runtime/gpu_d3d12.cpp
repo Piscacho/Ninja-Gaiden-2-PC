@@ -454,6 +454,13 @@ bool ApplyShaderOverrides(uint32_t type, uint64_t hash, std::string& hlsl)
     static const bool motionBlur = getenv("NG2_NOMOTIONBLUR") == nullptr;
     if (!motionBlur && (hash == 0xDF757D719DE4CB8Full || hash == 0xDF75D55E88917A96ull || hash == 0x99CD25F562821A21ull))
     { hlsl.insert(r, "    oC0 = float4(0, 0, 0, 0);\n"); changed = true; r = hlsl.rfind("    return XVte.w"); }
+    if (const char* nd = getenv("NG2_NODISCARD"))   // diagnostico: quita los discard (todos con "1", o los PS de la lista)
+    {
+        bool all = strcmp(nd, "1") == 0;
+        if (!all) for (const char* s = nd; s && *s; ) { if (strtoull(s, nullptr, 16) == hash) { all = true; break; } s = strchr(s, ','); if (s) s++; }
+        if (all) for (size_t k; (k = hlsl.find(" discard;")) != std::string::npos; ) { hlsl.replace(k, 9, " {}"); changed = true; }
+        r = hlsl.rfind("    return XVte.w");
+    }
     if (const char* env = getenv("NG2_PSOUT"))
     {
         std::string all = env;
@@ -2692,6 +2699,68 @@ void D3D12Draw(const XenosDraw& d)
         static DWORD vsT0 = GetTickCount(); static double vsMin = getenv("NG2_DUMPVSMIN") ? atof(getenv("NG2_DUMPVSMIN")) : 0;
         if (vsTrig && !trig && d.vsHash == vsTrig && (GetTickCount() - vsT0) / 1000.0 >= vsMin) { trig = true; g_forceLogFrame = (long long)g_frameCounter; LOG("[drawlog] NG2_DUMPVS: frame %lld", g_forceLogFrame); }
     }
+    {   // NG2_VSCONSTN=<n> (diagnostico): constantes del VS de los draws de n indices (matrices de huesos)
+        static const uint32_t cn = getenv("NG2_VSCONSTN") ? atoi(getenv("NG2_VSCONSTN")) : 0;
+        static const uint64_t cvs = getenv("NG2_VSCONSTVS") ? strtoull(getenv("NG2_VSCONSTVS"), nullptr, 16) : 0;
+        static int logged = 0;
+        if (cvs && d.vsHash == cvs && logged < 16)
+        {
+            logged++;
+            auto C = [](int c) { float f[4]; for (int k = 0; k < 4; k++) { uint32_t u = Reg(0x4000 + c * 4 + k); memcpy(&f[k], &u, 4); } char b[96]; snprintf(b, sizeof(b), "c%d=(%.3g %.3g %.3g %.3g) ", c, f[0], f[1], f[2], f[3]); return std::string(b); };
+            std::string m = C(49) + C(200) + C(201) + C(255);
+            for (int vf = 0; vf < 6; vf++)
+            {
+                uint32_t slot = 95 - vf, a = Reg(0x4800 + slot * 2) & 0x1FFFFFFC, b = ((Reg(0x4800 + slot * 2 + 1) >> 2) & 0xFFFFFF) * 4;
+                uint32_t bad = 0, big = 0; float mx = 0;
+                if (a && b && b < (8u << 20)) for (uint32_t i = 0; i < b / 4; i++) { uint32_t u = __builtin_bswap32(*(uint32_t*)(g_base + (0xA0000000u | a) + i * 4)); float f; memcpy(&f, &u, 4); if (f != f || std::isinf(f)) bad++; else { if (fabsf(f) > 1e4f) big++; mx = std::max(mx, fabsf(f)); } }
+                char t[128]; snprintf(t, sizeof(t), "| vf%d @%08X %u B NaN %u >1e4 %u max %g ", vf, a, b, bad, big, mx); m += t;
+            }
+            LOG("[vsconstvs] VS %016llX n=%u frame %llu: %s", (unsigned long long)d.vsHash, d.numIndices, (unsigned long long)g_frameCounter, m.c_str());
+        }
+        if (cn && d.numIndices == cn && logged < 6)
+        {
+            logged++;
+            int nan = 0, zero = 0, huge = 0;
+            std::string cs;
+            for (int c = 0; c < 256; c++)
+            {
+                float f[4]; for (int k = 0; k < 4; k++) { uint32_t u = Reg(0x4000 + c * 4 + k); memcpy(&f[k], &u, 4); if (f[k] != f[k] || std::isinf(f[k])) nan++; else if (fabsf(f[k]) > 1e6f) huge++; }
+                if (f[0] == 0 && f[1] == 0 && f[2] == 0 && f[3] == 0) zero++;
+                if (c < 96) { char b[80]; snprintf(b, sizeof(b), " c%d=(%.3g %.3g %.3g %.3g)", c, f[0], f[1], f[2], f[3]); cs += b; }
+            }
+            LOG("[vsconst] VS %016llX PS %016llX frame %llu: NaN/Inf %d, enormes %d, vectores cero %d |%s", (unsigned long long)d.vsHash, (unsigned long long)d.psHash,
+                (unsigned long long)g_frameCounter, nan, huge, zero, cs.c_str());
+            {   // indices de hueso de los vertices (slot 95, paso 44, ubyte4 en +12) y si su matriz (slot 94, 48 bytes) esta vacia
+                uint32_t va = Reg(0x4800 + 95 * 2) & 0x1FFFFFFC, vb = ((Reg(0x4800 + 95 * 2 + 1) >> 2) & 0xFFFFFF) * 4;
+                uint32_t ma = Reg(0x4800 + 94 * 2) & 0x1FFFFFFC, mb = ((Reg(0x4800 + 94 * 2 + 1) >> 2) & 0xFFFFFF) * 4;
+                if (va && ma && vb && vb < (8u << 20))
+                {
+                    uint32_t cnt[256] = {};
+                    for (uint32_t v = 0; v < vb / 44; v++) { uint32_t p = __builtin_bswap32(*(uint32_t*)(g_base + (0xA0000000u | va) + v * 44 + 12)); cnt[p & 0xFF]++; cnt[(p >> 8) & 0xFF]++; }
+                    std::string m;
+                    for (int b = 0; b < 256; b++) if (cnt[b])
+                    {
+                        bool zero = true; float t[3] = {};
+                        if ((uint32_t)b * 48 + 48 <= mb) for (int k = 0; k < 12; k++) { uint32_t u = __builtin_bswap32(*(uint32_t*)(g_base + (0xA0000000u | ma) + b * 48 + k * 4)); if (u) zero = false; if (k % 4 == 3) memcpy(&t[k / 4], &u, 4); }
+                        char s[64]; snprintf(s, sizeof(s), " %d:%u%s(%.2g,%.2g,%.2g)", b, cnt[b], zero ? "VACIA" : "", t[0], t[1], t[2]); m += s;
+                    }
+                    LOG("[vsconst]   huesos (%u vertices, matrices @%08X %u bytes):%s", vb / 44, ma, mb, m.c_str());
+                }
+            }
+            for (int s = 0; s < 3; s++)   // fetch constants de vertices 95, 94, 93 (slots habituales): direccion, tamano y resumen
+            {
+                uint32_t slot = 95 - s, dw0 = Reg(0x4800 + slot * 2), dw1 = Reg(0x4800 + slot * 2 + 1);
+                uint32_t addr = dw0 & 0x1FFFFFFC, bytes = ((dw1 >> 2) & 0xFFFFFF) * 4;
+                if (!addr || !bytes || bytes > (4u << 20)) continue;
+                const uint32_t* w = (const uint32_t*)(g_base + (0xA0000000u | addr));
+                uint32_t n = bytes / 4, z = 0, bad = 0; float mx = 0;
+                for (uint32_t i = 0; i < n; i++) { uint32_t u = __builtin_bswap32(w[i]); float f; memcpy(&f, &u, 4); if (u == 0) z++; if (f != f || std::isinf(f)) bad++; else mx = std::max(mx, fabsf(f)); }
+                std::string m;
+                for (uint32_t i = 0; i < std::min<uint32_t>(n, 48); i++) { uint32_t u = __builtin_bswap32(w[i]); float f; memcpy(&f, &u, 4); char b[24]; snprintf(b, sizeof(b), " %.3g", f); m += b; }
+                LOG("[vsconst]   slot %u @%08X %u bytes: ceros %u, NaN %u, max %g |%s", slot, addr, bytes, z, bad, mx, m.c_str());
+            }
+        }
+    }
     long long logFrame = DrawLogFrame();
     if (logFrame < 0 || g_failed || !g_dev) { D3D12DrawImpl(d); return; }
     OpenFrame();
@@ -2799,6 +2868,9 @@ static void D3D12DrawImpl(const XenosDraw& d)
     {   // NG2_SKIPSH=<hash>,<hash>... (diagnostico): omite los dibujos que usan esos VS/PS
         static std::vector<uint64_t> skipSh = [] { std::vector<uint64_t> v; if (const char* e = getenv("NG2_SKIPSH")) { char* p = (char*)e; while (*p) { v.push_back(strtoull(p, &p, 16)); while (*p == ',') p++; } } return v; }();
         for (uint64_t h : skipSh) if (h == d.vsHash || h == d.psHash) return;
+        // NG2_SKIPN=<n>,<n>... (diagnostico): omite los dibujos de esos numeros de indices
+        static std::vector<uint32_t> skipN = [] { std::vector<uint32_t> v; if (const char* e = getenv("NG2_SKIPN")) { char* p = (char*)e; while (*p) { v.push_back(strtoul(p, &p, 10)); while (*p == ',') p++; } } return v; }();
+        for (uint32_t n : skipN) if (n == d.numIndices) return;
     }
     ShaderEntry& vs = GetShader(0, d.vsCode, d.vsCount, d.vsHash);
     ShaderEntry& ps = GetShader(1, d.psCode, d.psCount, d.psHash);
@@ -2828,6 +2900,8 @@ static void D3D12DrawImpl(const XenosDraw& d)
     {   // NG2_NOZFORPS=<hash PS> (diagnostico): ese PS sin prueba ni escritura de profundidad
         static const uint64_t noZPs = getenv("NG2_NOZFORPS") ? strtoull(getenv("NG2_NOZFORPS"), nullptr, 16) : 0;
         if (noZPs && d.psHash == noZPs) dc &= ~0x6u;
+        static const uint32_t noZN = getenv("NG2_NOZFORN") ? atoi(getenv("NG2_NOZFORN")) : 0;   // idem para draws de n indices
+        if (noZN && d.numIndices == noZN) dc &= ~0x7u;
     }
     bool useDepth = (dc & 3) != 0;
     if (!colorMask && !useDepth) { g_skipped[4]++; return; }
@@ -3000,6 +3074,36 @@ static void D3D12DrawImpl(const XenosDraw& d)
             o = RingAlloc(bytes + 16, 16);
             if (o == ~0ull) { g_skipped[3]++; return; }
             memcpy(g_ringMap[g_fi] + o, src, bytes);
+            static const bool dynLog = getenv("NG2_DYNVBLOG") != nullptr;   // diagnostico: buferes de vertices que cambian cada frame
+            if (dynLog)
+            {
+                static std::unordered_map<uint32_t, std::pair<uint64_t, int>> last;
+                auto& e = last[addr];
+                if (e.first && e.first != h && e.second++ < 2)
+                {
+                    const uint32_t* w = (const uint32_t*)src; uint32_t nw = bytes / 4, bad = 0;
+                    for (uint32_t i = 0; i < nw; i++) { uint32_t u = __builtin_bswap32(w[i]); float f; memcpy(&f, &u, 4); if (f != f || std::isinf(f)) bad++; }
+                    std::string m; for (uint32_t i = 0; i < std::min<uint32_t>(nw, 16); i++) { uint32_t u = __builtin_bswap32(w[i]); float f; memcpy(&f, &u, 4); char b[24]; snprintf(b, sizeof(b), " %.3g", f); m += b; }
+                    if (d.vsHash == 0x9D065E47AE1B06B2ull)
+                    {
+                        float mn[3] = { 1e30f, 1e30f, 1e30f }, mxv[3] = { -1e30f, -1e30f, -1e30f };
+                        for (uint32_t v = 0; v < nw / 8; v++) for (int k = 0; k < 3; k++) { uint32_t u = __builtin_bswap32(w[v * 8 + k]); float f; memcpy(&f, &u, 4); mn[k] = std::min(mn[k], f); mxv[k] = std::max(mxv[k], f); }
+                        auto C = [](int c) { float f[4]; for (int k = 0; k < 4; k++) { uint32_t u = Reg(0x4000 + c * 4 + k); memcpy(&f[k], &u, 4); } char b[96]; snprintf(b, sizeof(b), "c%d=(%.3g %.3g %.3g %.3g) ", c, f[0], f[1], f[2], f[3]); return std::string(b); };
+                        LOG("[dynvb] pelo? %u vertices, x %.3g..%.3g y %.3g..%.3g z %.3g..%.3g | %s%s%s%s", nw / 8, mn[0], mxv[0], mn[1], mxv[1], mn[2], mxv[2], C(21).c_str(), C(22).c_str(), C(23).c_str(), C(24).c_str());
+                    }
+                    LOG("[dynvb] VS %016llX PS %016llX slot %u @%08X %u B, n %u prim %u, NaN %u |%s", (unsigned long long)d.vsHash, (unsigned long long)d.psHash, vf, addr, bytes, d.numIndices, d.primType, bad, m.c_str());
+                }
+                e.first = h;
+            }
+            static const bool nanLog = getenv("NG2_NANLOG") != nullptr;   // diagnostico: vertices con NaN/Inf (fisica rota en la CPU)
+            if (nanLog)
+            {
+                const uint32_t* w = (const uint32_t*)src; uint32_t nw = bytes / 4, bad = 0;
+                for (uint32_t i = 0; i < nw; i++) { uint32_t u = __builtin_bswap32(w[i]); if (((u >> 23) & 0xFF) == 0xFF && (u & 0x7FFFFF)) bad++; }
+                static std::unordered_map<uint64_t, int> seen;
+                if (nw && bad * 50 > nw && seen[d.vsHash]++ < 3)
+                    LOG("[nan] VS %016llX PS %016llX slot %u @%08X: %u de %u palabras NaN, prim %u n %u", (unsigned long long)d.vsHash, (unsigned long long)d.psHash, vf, addr, bad, nw, d.primType, d.numIndices);
+            }
             g_vbCache[key] = { o, h };
             g_vbCopyBytes += bytes;
         }
