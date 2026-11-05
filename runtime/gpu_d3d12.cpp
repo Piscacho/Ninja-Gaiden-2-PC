@@ -182,7 +182,7 @@ float ps_main(float4 pos : SV_Position) : SV_Depth
 ComPtr<ID3D12RootSignature> g_colorToDepthRootSig;
 ComPtr<ID3D12PipelineState> g_colorToDepthPso;
 ComPtr<ID3D12RootSignature> g_colorResolveRootSig;
-ComPtr<ID3D12PipelineState> g_colorResolvePso, g_colorResolvePso1616, g_colorResolvePso1616F, g_colorResolvePso16F;
+ComPtr<ID3D12PipelineState> g_colorResolvePso, g_colorResolvePso1616, g_colorResolvePso1616F, g_colorResolvePso16F, g_colorResolvePso565;
 static const bool g_1616Sat = getenv("NG2_1616SAT") != nullptr;   // diagnostico: 16_16 -> k_16_16 recortado a 0..1 (antes)
 ComPtr<ID3D12DescriptorHeap> g_rtvHeap3;   // RTV de las texturas resueltas por shader
 constexpr UINT kRtvHeap3Size = 512;
@@ -687,6 +687,8 @@ bool Init(HWND hwnd)
             g_dev->CreateGraphicsPipelineState(&cpd, IID_PPV_ARGS(&g_colorResolvePso1616F));
             cpd.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;   // sesion 16 de NG2: escena HDR -> k_16_16_16_16_FLOAT
             g_dev->CreateGraphicsPipelineState(&cpd, IID_PPV_ARGS(&g_colorResolvePso16F));
+            cpd.RTVFormats[0] = DXGI_FORMAT_B5G6R5_UNORM;   // sesion 19 de NG2: 8888 -> k_5_6_5 por GPU
+            if (FAILED(g_dev->CreateGraphicsPipelineState(&cpd, IID_PPV_ARGS(&g_colorResolvePso565)))) LOG("[d3d12] sin PSO de resolve a 5_6_5");
         }
         D3D12_DESCRIPTOR_HEAP_DESC rh{}; rh.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV; rh.NumDescriptors = kRtvHeap3Size;
         g_dev->CreateDescriptorHeap(&rh, IID_PPV_ARGS(&g_rtvHeap3));
@@ -979,6 +981,10 @@ bool BindTexture(uint32_t tf, D3D12_CPU_DESCRIPTOR_HANDLE slot)
     }
     bool tiled = fc[0] >> 31; uint32_t pitchTexels = ((fc[0] >> 22) & 0x1FF) * 32;
     uint32_t dim = (fc[5] >> 9) & 3;
+    // Sesion 19 de NG2: textura 1D (ancho en los bits 0-23 de la palabra 2) = 2D de alto 1. Antes se rechazaba y el shader leia
+    // la textura blanca de relleno (rampas de color/luz). NG2_NO1D=1 = antes.
+    static const bool no1D = getenv("NG2_NO1D") != nullptr;
+    if (dim == 0 && !no1D) { w = std::min<uint32_t>((fc[2] & 0xFFFFFF) + 1, 16384); h = 1; dim = 1; static int n = 0; if (n++ < 4) LOG("[d3d12] textura 1D %08X de %u texeles (fmt %u)", base, w, fmt); }
     if (dim != 1 || !base) return false;                   // solo 2D
     DXGI_FORMAT df; uint32_t blockBytes, blockDim;
     int conv = 0;   // 0 copia directa, 1 = profundidad 24_8 -> float, 2 = 24_8_FLOAT -> float, 3 = componentes de 16 bits con signo/exp -> half
@@ -1053,7 +1059,7 @@ bool BindTexture(uint32_t tf, D3D12_CPU_DESCRIPTOR_HANDLE slot)
     // Sesion 24: texturas resueltas por GPU en k_8 (copia 8888, canal rojo) o k_32_FLOAT (copia R32_FLOAT); mismo tamano exacto
     // Sesion 16 de NG2: tambien k_16_16_16_16_FLOAT y _EXPAND (mismos bits) desde el resolve por GPU de la escena HDR
     const uint32_t rfmt = fmt == 29 ? 32u : fmt;
-    if (fmt == 2 || fmt == 36 || (fmt == 25 && !signedOrExp) || fmt == 32 || fmt == 29)   // half float: el signo y exp_adjust no se aplican (como al subir desde memoria)
+    if (fmt == 2 || fmt == 36 || (fmt == 25 && !signedOrExp) || fmt == 32 || fmt == 29 || fmt == 4)   // half float: el signo y exp_adjust no se aplican (como al subir desde memoria)
     {
         uint64_t k = ResolvedKey(base, w, h) ^ ResolvedFmtTag(rfmt);
         auto last = g_resolvedLast.find(base);
@@ -1062,7 +1068,7 @@ bool BindTexture(uint32_t tf, D3D12_CPU_DESCRIPTOR_HANDLE slot)
             // Sesion 24: el resolve tiene otro tamano (p. ej. 112x207 leido como 110x207): copia de la region a una textura derivada
             // en la GPU (antes se volcaba a memoria esperando a la GPU: tirones de ~50 ms)
             auto srcIt = g_resolved.find(last->second);
-            if (rfmt != 32 && srcIt != g_resolved.end() && srcIt->second.res && srcIt->second.texFmt == rfmt && w <= srcIt->second.w + 8 && h <= srcIt->second.h + 8 &&
+            if (rfmt != 32 && rfmt != 4 && srcIt != g_resolved.end() && srcIt->second.res && srcIt->second.texFmt == rfmt && w <= srcIt->second.w + 8 && h <= srcIt->second.h + 8 &&
                 (srcIt->second.inMemory || MemHash(base) == srcIt->second.memHash))
             {
                 ResolvedTex& src = srcIt->second;
@@ -1119,7 +1125,8 @@ bool BindTexture(uint32_t tf, D3D12_CPU_DESCRIPTOR_HANDLE slot)
                 }
                 // Un solo canal (R del render target): todos los canales de la textura lo replican (RRRR, como HostRep)
                 uint32_t swz = (fc[3] >> 1) & 0xFFF;
-                auto map = [&](uint32_t c) -> UINT { return c < 4 ? HostRep(fmt, c) : (c == 4 ? D3D12_SHADER_COMPONENT_MAPPING_FORCE_VALUE_0 : D3D12_SHADER_COMPONENT_MAPPING_FORCE_VALUE_1); };
+                const bool xs = rfmt == 4 && r.swapRB;   // 5_6_5 por GPU: la copia guarda los colores del RT; el swap se aplica al leer
+                auto map = [&](uint32_t c) -> UINT { if (c < 4) { UINT h = HostRep(fmt, c); return xs && (h == 0 || h == 2) ? 2 - h : h; } return c == 4 ? D3D12_SHADER_COMPONENT_MAPPING_FORCE_VALUE_0 : D3D12_SHADER_COMPONENT_MAPPING_FORCE_VALUE_1; };
                 D3D12_SHADER_RESOURCE_VIEW_DESC sd{}; sd.Format = r.fmt; sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D; sd.Texture2D.MipLevels = 1;
                 sd.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(map(swz & 7), map((swz >> 3) & 7), map((swz >> 6) & 7), map((swz >> 9) & 7));
                 g_dev->CreateShaderResourceView(r.res.Get(), &sd, slot);
@@ -2113,6 +2120,10 @@ depthCpu:
         // Sesion 16 de NG2 (rendimiento): RT float de 16 bits -> k_16_16_16_16_FLOAT o 8888 por la GPU. Antes iban por la CPU
         // (3 copias de 1120x584 por frame, cada una esperando a la GPU): eran ~75 % del hilo de la GPU. NG2_CPUFLOATRESOLVE=1 = antes.
         static const bool cpuFloat = getenv("NG2_CPUFLOATRESOLVE") != nullptr;
+        // Sesion 19 de NG2: 8888 -> k_5_6_5 por GPU (una copia de 1280x720 por frame en combate: ~11 ms de espera). NG2_NOGPU565=1 = CPU
+        static const bool no565 = getenv("NG2_NOGPU565") != nullptr;
+        if (!gpuTexFmt && !oldGpuResolve && !no565 && rt8888 && fmt == 4 && single && expBias == 0 && g_colorResolvePso565 && g_rtvHeap3)
+        { gpuTexFmt = 4; gpuShader = true; }
         if (!gpuTexFmt && !oldGpuResolve && !cpuFloat && rt->fmt == DXGI_FORMAT_R16G16B16A16_FLOAT && expBias == 0 && g_rtvHeap3)
         {
             // NG2_NOGPUF32=1 / NG2_NOGPUF6=1: esos resolves vuelven a la CPU (sesion 17: el negro venia de la copia de region derivada)
@@ -2133,7 +2144,7 @@ depthCpu:
             if (ageAddr && (destBase & 0xFFFFF000) == ageAddr && rlogs++ < 400)
                 LOG("[texage] resolve -> %08X en el frame %llu: %ux%u desde base %u (rect %d,%d-%d,%d), gpu %d", destBase, (unsigned long long)g_frameCounter, w, h, rt->base, x0, y0, x1, y1, (int)gpuPath);
         }
-        DXGI_FORMAT resFmt = gpuTexFmt == 32 ? DXGI_FORMAT_R16G16B16A16_FLOAT : gpuTexFmt == 36 ? DXGI_FORMAT_R32_FLOAT : gpuTexFmt == 25 ? (g_1616Sat ? DXGI_FORMAT_R16G16_UNORM : DXGI_FORMAT_R16G16_FLOAT) : DXGI_FORMAT_B8G8R8A8_UNORM;
+        DXGI_FORMAT resFmt = gpuTexFmt == 4 ? DXGI_FORMAT_B5G6R5_UNORM : gpuTexFmt == 32 ? DXGI_FORMAT_R16G16B16A16_FLOAT : gpuTexFmt == 36 ? DXGI_FORMAT_R32_FLOAT : gpuTexFmt == 25 ? (g_1616Sat ? DXGI_FORMAT_R16G16_UNORM : DXGI_FORMAT_R16G16_FLOAT) : DXGI_FORMAT_B8G8R8A8_UNORM;
         if (r.res && (r.fmt != resFmt || (gpuShader && r.rtv == ~0u) || r.w != (UINT)w || r.h != (UINT)h))
         {   // otro formato o hace falta poder dibujar en ella: se recrea (el recurso viejo se libera cuando la GPU acabe el frame)
             g_deferredRelease[g_fi].push_back(r.res); r.res.Reset();
@@ -2184,7 +2195,7 @@ depthCpu:
             g_boundRt = nullptr;
             D3D12_VIEWPORT vp{ 0, 0, (float)w, (float)h, 0, 1 }; D3D12_RECT sr{ 0, 0, w, h };
             g_list->RSSetViewports(1, &vp); g_list->RSSetScissorRects(1, &sr);
-            g_list->SetPipelineState(gpuTexFmt == 25 ? (g_1616Sat ? g_colorResolvePso1616.Get() : g_colorResolvePso1616F.Get()) : gpuTexFmt == 32 ? g_colorResolvePso16F.Get() : g_colorResolvePso.Get());
+            g_list->SetPipelineState(gpuTexFmt == 25 ? (g_1616Sat ? g_colorResolvePso1616.Get() : g_colorResolvePso1616F.Get()) : gpuTexFmt == 32 ? g_colorResolvePso16F.Get() : gpuTexFmt == 4 ? g_colorResolvePso565.Get() : g_colorResolvePso.Get());
             g_list->SetGraphicsRootSignature(g_colorResolveRootSig.Get());
             ID3D12DescriptorHeap* heaps[] = { g_srvHeap.Get() };
             g_list->SetDescriptorHeaps(1, heaps);
@@ -2416,7 +2427,7 @@ static void WriteBackResolved(ResolvedTex& r)
     if (!r.res || r.inMemory || !g_readback || !r.destPitch) { static int n = 0; if (n++ < 6) LOG("[writeback] omitido: res %d enMemoria %d readback %d pitch %u", (int)(r.res != nullptr), (int)r.inMemory, (int)(g_readback != nullptr), r.destPitch); return; }
     FlushPendingResolves();
     if (r.state != D3D12_RESOURCE_STATE_COPY_SOURCE) { auto b = Transition(r.res.Get(), r.state, D3D12_RESOURCE_STATE_COPY_SOURCE); ProbedBarrier(1, &b, __LINE__); r.state = D3D12_RESOURCE_STATE_COPY_SOURCE; }
-    const UINT bpp = r.texFmt == 32 ? 8u : 4u;   // sesion 16 de NG2: k_16_16_16_16_FLOAT (8 bytes por pixel)
+    const UINT bpp = r.texFmt == 32 ? 8u : r.texFmt == 4 ? 2u : 4u;   // sesion 16 de NG2: k_16_16_16_16_FLOAT (8 bytes por pixel); 19: 5_6_5
     UINT rowPitch = (r.w * bpp + 255) & ~255u;
     D3D12_TEXTURE_COPY_LOCATION dst{ g_readback.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT }; dst.PlacedFootprint.Footprint = { r.fmt, r.w, r.h, 1, rowPitch };
     D3D12_TEXTURE_COPY_LOCATION sl{ r.res.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX }; sl.SubresourceIndex = 0;
@@ -2426,6 +2437,23 @@ static void WriteBackResolved(ResolvedTex& r)
     if (!p) return;
     uint8_t* out = g_base + (0xA0000000u | (r.destBase & 0x1FFFFFFF));
     uint32_t pitchAligned = (r.destPitch + 31) & ~31u, maxH = r.destH ? r.destH : 0x3FFF;
+    if (r.texFmt == 4)
+    {   // 5_6_5 (sesion 19): palabra de 16 bits; con swapRB se intercambian R y B; endian por palabras de 16 bits
+        for (uint32_t y = 0; y < r.h && y < maxH; y++)
+        {
+            uint32_t outer = TiledOuter(y, pitchAligned, 1);
+            for (uint32_t x = 0; x < r.w && x < r.destPitch; x++)
+            {
+                uint16_t v = *(const uint16_t*)(p + y * rowPitch + x * 2);
+                if (r.swapRB) v = (uint16_t)(((v & 0x1F) << 11) | (v & 0x07E0) | (v >> 11));
+                if (r.endian == 1 || r.endian == 2) v = __builtin_bswap16(v);
+                *(uint16_t*)(out + TiledInner(x, y, 1, outer)) = v;
+            }
+        }
+        g_readback->Unmap(0, nullptr);
+        r.inMemory = true; g_cpuResolveCounter++; g_writeBacks++;
+        return;
+    }
     if (r.texFmt == 32)
     {   // dos palabras (R | G << 16, B | A << 16) con el endian del destino, tiling de 8 bytes
         for (uint32_t y = 0; y < r.h && y < maxH; y++)
@@ -2552,7 +2580,8 @@ static void WriteBackResolvedForDraw(uint32_t mask)
         bool gpuOk = dim == 1 && ((fmt == 6 && r.texFmt == 6 && w <= r.w + 8 && h <= r.h + 8) ||     // directo o region derivada
                                   ((fmt == 2 || fmt == 36 || (fmt == 25 && ((fc0 >> 2) & 0x55) == 0 && ((Reg(0x4800 + t * 6 + 3) >> 13) & 0x3F) == 0)) &&
                                    r.texFmt == fmt && w <= r.w + 8 && h <= r.h + 8) ||   // sesion 24 (directo o region derivada)
-                                  ((fmt == 32 || fmt == 29) && r.texFmt == 32 && w == r.w && h == r.h && !getenv("NG2_WB32")));   // sesion 16-17 de NG2: solo tamano exacto
+                                  ((fmt == 32 || fmt == 29) && r.texFmt == 32 && w == r.w && h == r.h && !getenv("NG2_WB32")) ||   // sesion 16-17 de NG2: solo tamano exacto
+                                  (fmt == 4 && r.texFmt == 4 && w == r.w && h == r.h));   // sesion 19
         if (!gpuOk)
         {
             static std::unordered_map<uint64_t, int> seenWb;

@@ -40,3 +40,16 @@ Fecha: 2026-11-04. Sin commit de esta sesión todavía.
 
 - Copia de región derivada con 8 bytes por píxel (una textura pequeña de 281×146 aún pasa por memoria).
 - Seguir probando capítulos (jefes, fases nuevas).
+
+## Segunda parte (hasta las 22:30)
+
+- **Texturas 1D** (`BindTexture`): ancho en los bits 0-23 de la palabra 2; se suben como 2D de alto 1 (máx. 16384). Antes se
+  rechazaban y el shader leía la textura blanca de relleno (8 shaders con `tfetch` 1D). `NG2_NO1D=1` = antes. En la partida de
+  combate no se llegó a usar ninguna (estarán en otras escenas).
+- **Resolve 8888 → `k_5_6_5` por GPU** (PSO `g_colorResolvePso565`, RTV B5G6R5_UNORM): era la última copia por CPU del
+  combate (1280×720 por frame, ~11 ms de espera). El intercambio R/B (`swapRB`) se aplica al leer la textura de la GPU (mapeo del
+  SRV) y en el volcado a memoria de 2 bytes por píxel. Solo tamaño exacto; no pasa por la región derivada. `NG2_NOGPU565=1` = CPU.
+  Una de las dos caídas del combate pasa de 46-53 a 55-58 fps. La otra (hacia el segundo 80 de `combate.txt`) es la transición
+  de la cinemática al juego.
+- Perfil de esas caídas: el hilo de la GPU solo está ocupado el 32 %; el hilo principal y un hilo de trabajo del juego (sub_822F0BF8)
+  están siempre ocupados (puede ser espera activa del propio juego). Lo que queda por frame lento: ~9 ms de texturas.
