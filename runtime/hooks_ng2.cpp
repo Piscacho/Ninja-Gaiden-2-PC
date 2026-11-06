@@ -132,7 +132,10 @@ PPC_FUNC(sub_836ED768)
     static const bool on = getenv("NG2_HAIRLOG") != nullptr;
     static std::atomic<int> n{ 0 };
     uint32_t hair = ctx.r3.u32, obj = ctx.r4.u32;
-    bool log = on && n.fetch_add(1) < 24;
+    int callNo = n.fetch_add(1);
+    bool log = on && callNo < 24;
+    if (on && callNo == 3000)   // vuelca los nodos del esqueleto (0x84E78000, 8 KB) para compararlos con Xenia
+        if (FILE* f = fopen("nodos_84E78000.bin", "wb")) { fwrite(g_base + 0x84E78000, 1, 0x2000, f); fclose(f); LOG("[hair] nodos volcados (llamada %d)", callNo); }
     auto mat = [](uint32_t a) {
         std::string s; if (!a) return std::string("(nulo)");
         for (int i = 0; i < 16; i++) { uint32_t u = Load32(a + i * 4); float f; memcpy(&f, &u, 4); char b[24]; snprintf(b, sizeof(b), "%s%.3g", i % 4 ? " " : " | ", f); s += b; }
@@ -151,7 +154,39 @@ PPC_FUNC(sub_836ED768)
             vec(obj + 48).c_str(), mat(obj + 128).c_str());
         { std::string hx; for (int i = 20; i < 100; i++) { char b[4]; snprintf(b, sizeof(b), "%02X", g_base[obj + i]); hx += b; } LOG("[hair]   bytes obj+20..99: %s", hx.c_str()); }
         { std::string hx; uint32_t o2 = Load32(obj + 112); for (int i = 0; i < 96 && o2; i++) { char b[4]; snprintf(b, sizeof(b), "%02X", g_base[o2 + i]); hx += b; } LOG("[hair]   *(obj+112) @%08X: %s", o2, hx.c_str()); }
+        { uint32_t t = Load32(obj + 108); std::string l; for (int i = 0; t && i < 12; i++) { char b[12]; snprintf(b, sizeof(b), " %04X", (unsigned)__builtin_bswap16(*(uint16_t*)(g_base + t + i * 2))); l += b; } LOG("[hair]   lista *(obj+108) @%08X:%s", t, l.c_str()); }
         LOG("[hair]   obj+12 %08X +116 %08X +120 %08X +124 %08X, pelo+16 %08X", Load32(obj + 12), Load32(obj + 116), Load32(obj + 120), Load32(obj + 124), Load32(hair + 16));
         LOG("[hair]   puntos @%08X: p0%s | p1%s | p2%s | p0+16%s", pts, vec(pts).c_str(), vec(pts + 64).c_str(), vec(pts + 128).c_str(), vec(pts + 16).c_str());
     }
+}
+
+// Sesion 21 (diagnostico, NG2_HAIRLOG=1): conductores del pelo. sub_836EDAF0 crea un conductor (vtable 0x82282CD0) y lo cuelga
+// del nodo del hueso raiz; sub_836EC7F0 (entrada de esa vtable) deberia aplicar la simulacion a los huesos hijos.
+PPC_FUNC_IMPL(__imp__sub_836EDAF0);
+PPC_FUNC(sub_836EDAF0)
+{
+    static const bool on = getenv("NG2_HAIRLOG") != nullptr; static std::atomic<int> n{ 0 };
+    uint32_t obj = ctx.r3.u32, a4 = ctx.r4.u32;
+    __imp__sub_836EDAF0(ctx, base);
+    if (on && n.fetch_add(1) < 30) LOG("[hair] EDAF0 obj %08X r4 %08X obj+12 %d nodo %08X lista +112 %08X +116 %08X", obj, a4, (int)Load32(obj + 12), Load32(obj + 4), Load32(obj + 4) ? Load32(Load32(obj + 4) + 112) : 0, Load32(obj + 4) ? Load32(Load32(obj + 4) + 116) : 0);
+}
+PPC_FUNC_IMPL(__imp__sub_836EC7F0);
+PPC_FUNC(sub_836EC7F0)
+{
+    static const bool on = getenv("NG2_HAIRLOG") != nullptr; static std::atomic<int> n{ 0 };
+    int k = n.fetch_add(1);
+    if (on && (k < 10 || k % 5000 == 0)) LOG("[hair] EC7F0 llamada %d r3 %08X r4 %08X r5 %08X lr %08X", k, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, (uint32_t)ctx.lr);
+    __imp__sub_836EC7F0(ctx, base);
+}
+// Sesion 21 (diagnostico, NG2_HAIRLOG=1): aplicador de fisica por modelo (desde la actualizacion del esqueleto sub_8247B2A8).
+// Sale sin hacer nada si *(r3+12) == 0 o si la global 0x84BA235C != 0.
+PPC_FUNC_IMPL(__imp__sub_836FA630);
+PPC_FUNC(sub_836FA630)
+{
+    static const bool on = getenv("NG2_HAIRLOG") != nullptr; static std::atomic<int> n{ 0 };
+    uint32_t a3 = ctx.r3.u32, a4 = ctx.r4.u32; int k = n.fetch_add(1);
+    static const bool force = getenv("NG2_FORCEPHYS") != nullptr;   // prueba: estado 2 (activo) si esta parado
+    if (force && Load32(a3 + 12) == 0) Store32(a3 + 12, 2);
+    __imp__sub_836FA630(ctx, base);
+    if (on && (k < 12 || k % 3000 == 0)) LOG("[hair] FA630 llamada %d obj %08X modelo %08X obj+12 %08X global %08X -> %llX", k, a3, a4, Load32(a3 + 12), Load32(0x84BA235C), (unsigned long long)ctx.r3.u64);
 }

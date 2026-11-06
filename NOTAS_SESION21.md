@@ -52,3 +52,23 @@ Siguiente:
   pulsaciones pueden ir a esa ventana. No automatizar Xenia en ese caso.
 - Los volcados de EDRAM (`NG2_DUMPTEXDRAW`) no incluyen la superficie de la escena (pitch 1120): no sirven para ver qué pinta un
   draw de la escena.
+
+## Tercera parte (pista de los huesos del pelo)
+
+- La paleta de huesos la escribe `sub_8232EA98` desde `sub_8247ECA0`. Los nodos del esqueleto de Sonia están en 0x84E78000
+  (0x90 bytes por nodo, matriz de mundo al principio; volcado con `NG2_HAIRLOG=1` → `run/nodos_84E78000.bin`). Los nodos
+  hijos de cada mechón tienen la **misma rotación que su raíz** (p. ej. 0x84E793F0 = 0x84E78820): pose de reposo, la simulación
+  no les llega. Los escribe la actualización del esqueleto `sub_8247B2A8` (← `sub_8247A730`).
+- Cada mechón crea un «conductor» de 20 bytes (`sub_836EDAF0`, vtable 0x82282CD0) colgado del nodo del hueso raíz
+  (+112/+116 = lista). Sus métodos solo reenvían al siguiente de la lista; el tipo (entrada [10], `sub_836EDBA0`) es 4.
+  `sub_836EC7F0` es una inicialización (12 llamadas en toda la partida, normal).
+- La tabla de componentes del pelo (vtable 0x82282CB0): [4] `sub_836ED858` actualización, [5] `sub_836ED900` busca el nodo raíz,
+  [6] `sub_836EDAF0` crea el conductor.
+- `sub_8247B2A8` llama a `sub_836FA630(entrada+36, modelo)` para los modelos de una tabla (0x84C22380, 48 bytes por entrada).
+  Se llama cada frame para un solo objeto (0x84BA7920, modelo 0x84C23DD8) y sale enseguida porque su estado (+12) es 0.
+  **Forzarlo a 2 (`NG2_FORCEPHYS=1`) no cambia nada**: ese objeto no es el pelo de Sonia.
+- `obj+124 = 0` en los mechones: `sub_836F0F48` (al final del escritor) toca vértices de malla, no huesos; puede ser normal.
+
+Siguiente: encontrar dónde la actualización del esqueleto (`sub_8247B2A8`) trata los nodos con conductor de tipo 4 (la que
+debería tomar los puntos simulados), y comparar los nodos 0x84E78000 con Xenia (`MEM-84E78000-2000` con `tools/xenia_drive.py`)
+cuando no haya otra ventana en primer plano.
