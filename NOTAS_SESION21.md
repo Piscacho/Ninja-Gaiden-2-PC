@@ -88,3 +88,19 @@ cuando no haya otra ventana en primer plano.
 Siguiente (lo más rápido): con Xenia y sin otra ventana delante, leer los nodos 0x84E78000 (¿los hijos de cada mechón tienen
 otra rotación?) y la lista de conductores de un nodo raíz (+112) para ver si allí cambian. Alternativa sin Xenia: vigilar
 lecturas (no escrituras) de los puntos simulados de un mechón para ver qué código los consume además del escritor de tiras.
+
+## Quinta parte (correcciones importantes)
+
+- **Corrección:** el draw de 6863 índices (vértices 1384-4212, huesos 22-78, VS E7323601) es la **cara y el cuero cabelludo**,
+  no la melena: con `NG2_SKIPN=4453,1627` la cara sigue ahí. Los huesos 22-78 son los de la expresión facial (por eso tienen
+  la matriz de la cabeza: cara neutra). Toda la pista de «huesos del pelo sin simulación» queda descartada.
+- Los puntos simulados de los mechones solo los leen la simulación (`sub_836ECF20`, `sub_836E9E88`) y el escritor de tiras
+  (`NG2_WRITEWATCH` + `NG2_WRITEWATCHREAD=1`, lecturas y escrituras). Es normal: no hay otro consumidor.
+- El pelo que sí tenemos es el **casquete de 4453 índices** (solo hueso 4, textura del pelo 14067000). Su alfa es correcto:
+  `oC0.w = tex.w × interpolador7.w` y los dos valen 1. Con la profundidad normal no se ve porque queda a ras del cráneo
+  (caja ±0,08 frente a ±0,07 de la cara) y la piel lo tapa; quitándolo (`NG2_SKIPN=4453`) la cabeza se ve igual.
+- Falta **volumen**: en Xenia la melena sobresale mucho más. O falta un draw (otra malla de pelo), o el casquete se deforma
+  hacia fuera en Xenia. Para saberlo hay que comparar los draws con Xenia (p. ej. `--trace_gpu_prefix` o contar los draws con
+  la textura 14067000 en la misma escena).
+
+Diagnóstico nuevo: `NG2_WRITEWATCHREAD=1` (diag.cpp) hace que `NG2_WRITEWATCH` registre también las lecturas.

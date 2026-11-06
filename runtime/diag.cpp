@@ -58,7 +58,9 @@ thread_local bool t_wwStep = false;
 void WwProtect(bool on)
 {
     DWORD old;
-    VirtualProtect((void*)g_wwPageLo, g_wwPageHi - g_wwPageLo, on ? PAGE_READONLY : PAGE_READWRITE, &old);
+    // NG2_WRITEWATCHREAD=1 (sesion 21): tambien las lecturas (pagina sin acceso)
+    static const bool rd = getenv("NG2_WRITEWATCHREAD") != nullptr;
+    VirtualProtect((void*)g_wwPageLo, g_wwPageHi - g_wwPageLo, on ? (rd ? PAGE_NOACCESS : PAGE_READONLY) : PAGE_READWRITE, &old);
 }
 LONG CALLBACK WwHandler(EXCEPTION_POINTERS* ep)
 {
@@ -69,7 +71,9 @@ LONG CALLBACK WwHandler(EXCEPTION_POINTERS* ep)
         if (g_wwLogged < g_wwMax) WwProtect(true);
         return EXCEPTION_CONTINUE_EXECUTION;
     }
-    if (er->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || er->NumberParameters < 2 || er->ExceptionInformation[0] != 1) return EXCEPTION_CONTINUE_SEARCH;
+    static const bool rdw = getenv("NG2_WRITEWATCHREAD") != nullptr;
+    if (er->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || er->NumberParameters < 2 || (er->ExceptionInformation[0] != 1 && !(rdw && er->ExceptionInformation[0] == 0))) return EXCEPTION_CONTINUE_SEARCH;
+    const char* kind = er->ExceptionInformation[0] == 1 ? "escritura" : "lectura";
     uintptr_t fa = (uintptr_t)er->ExceptionInformation[1];
     if (fa < g_wwPageLo || fa >= g_wwPageHi) return EXCEPTION_CONTINUE_SEARCH;
     uint32_t guest = (uint32_t)(fa - (uintptr_t)g_base);
@@ -90,7 +94,7 @@ LONG CALLBACK WwHandler(EXCEPTION_POINTERS* ep)
         PPCContext* gctx = nullptr;
         { std::lock_guard lock(g_mutex); for (auto& t : g_threads) if (t.tid == GetCurrentThreadId()) gctx = t.ctx; }
         CONTEXT c = *ep->ContextRecord;
-        char line[1200]; int n = snprintf(line, sizeof(line), "[sample] tid %lu escritura %08X (+%u) lr=0x%08X pila host:", GetCurrentThreadId(), guest, guest - g_wwAddr, gctx ? (uint32_t)gctx->lr : 0);
+        char line[1200]; int n = snprintf(line, sizeof(line), "[sample] tid %lu %s %08X (+%u) lr=0x%08X pila host:", GetCurrentThreadId(), kind, guest, guest - g_wwAddr, gctx ? (uint32_t)gctx->lr : 0);
         for (int f = 0; f < 24 && c.Rip; f++)
         {
             n += snprintf(line + n, sizeof(line) - n, " %llX", (unsigned long long)(c.Rip - mod + 0x140000000ull));
