@@ -42,4 +42,6 @@ Problemas conocidos
 - La primera vez que aparece cada efecto puede haber un pequeno tiron
   (se compilan los shaders; luego quedan en "shadercache").
 - Mission Mode no funciona (necesita la actualizacion del titulo).
+- Falta el pelo de algunos personajes (Sonia sale calva; a Muramasa le faltan
+  el pelo y la barba). Solo es visual.
 - El registro de la ultima partida esta en ng2.log (util para informar de fallos).
