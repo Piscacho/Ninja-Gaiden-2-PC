@@ -104,3 +104,18 @@ lecturas (no escrituras) de los puntos simulados de un mechón para ver qué có
   la textura 14067000 en la misma escena).
 
 Diagnóstico nuevo: `NG2_WRITEWATCHREAD=1` (diag.cpp) hace que `NG2_WRITEWATCH` registre también las lecturas.
+
+## Sexta parte (casquete y tiras: datos iguales que en Xenia)
+
+- El casquete de 4453 índices se dibuja bien: alfa real del shader = 1 (pintando `oC0.w`), sin NaN, color normal. Con su color
+  natural es una **gorra pegada al cráneo que ni tapa las orejas**: es la capa de arriba del pelo. Quitarlo apenas cambia nada.
+- Las tiras: los datos del corte (`*(obj+112)`) son **idénticos en Xenia**. Allí el puntero 0xFB9F92A0 apunta a la física
+  0x1B9FA2A0 (la zona 0xE0000000 de la consola va desplazada 0x1000) y nuestro patrón `3B13B7D8 00000000 3B9EF523` está justo
+  ahí. Mismos puntos simulados y mismos datos: nuestras tiras deberían coincidir con las de Xenia.
+- Nuestro kernel solo devuelve memoria física en 0xA0000000-0xBFFF0000, así que el desplazamiento de 0x1000 de la zona 0xE no
+  nos afecta.
+- La caché de shaders no es la causa (`NG2_NOSHADERCACHE=1`: igual).
+- Sigue sin saberse de dónde sale el volumen de la melena de Xenia. Candidatos: un draw que no emitimos (otra malla de pelo) o
+  algo que agranda las tiras. Hace falta comparar la lista de draws con Xenia (traza de GPU) o encontrar sus búferes de tiras.
+
+Diagnóstico nuevo: `NG2_TINTN=<n>` multiplica por 8 la salida del PS en los draws de n índices (comprobado con la piel, 5564).

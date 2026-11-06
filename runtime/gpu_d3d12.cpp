@@ -3118,6 +3118,9 @@ static void D3D12DrawImpl(const XenosDraw& d)
             static const double psoutAt = getenv("NG2_PSOUTAT") ? atof(getenv("NG2_PSOUTAT")) : -1;
             static const double tStart = QpcMs();
             if (psoutAt >= 0 && cbase == 0x4400 && (QpcMs() - tStart) >= psoutAt * 1000) v[2] = -1.0f;
+            // NG2_TINTN=<n> (diagnostico, sesion 21): multiplica por 8 la salida del PS en los draws de n indices (para verlos)
+            static const uint32_t tintN = getenv("NG2_TINTN") ? atoi(getenv("NG2_TINTN")) : 0;
+            if (tintN && cbase == 0x4400 && d.numIndices == tintN) v[3] = (v[3] != 0 ? v[3] : 1.0f) * 8.0f;
         }
         v[4] = RegF(0x210F); v[5] = RegF(0x2110); v[6] = RegF(0x2111); v[7] = RegF(0x2112);
         v[8] = RegF(0x2113); v[9] = RegF(0x2114);
