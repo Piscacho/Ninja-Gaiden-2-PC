@@ -12,7 +12,9 @@ ev = []  # (t, key)
 for spec in presses.split(","):
     t, k = spec.split(":"); ev.append((float(t), k))
 for s in shots: ev.append((s, "SHOT"))
-ev.sort()
+for spec in os.environ.get("XMEM", "").split(","):
+    if spec: t, k = spec.split(":", 1); ev.append((float(t), k))
+ev.sort(key=lambda e: e[0])
 u = ctypes.windll.user32
 p = subprocess.Popen([exe] + os.environ.get("XARGS","").split() + [iso], cwd=xd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 t0 = time.time()
@@ -41,6 +43,17 @@ for t, k in ev:
     h = hwnd()
     if not h: continue
     u.ShowWindow(h, 9); u.SetForegroundWindow(h)
+    if k.startswith("PY="):   # PY=<script>: ejecuta python <script> <pid de Xenia> <carpeta del script>
+        sc = k[3:]; r = subprocess.run([sys.executable, sc, str(p.pid), os.path.dirname(sc)], capture_output=True, text=True); print(r.stdout, r.stderr, flush=True); continue
+    if k.startswith("MEM"):   # MEM-<dir hex>-<bytes hex>: lee la memoria de invitado de Xenia (base 0x100000000) a salida_<dir>.bin
+        _, a, n = k.split("-"); a = int(a, 16); n = int(n, 16)
+        k32 = ctypes.windll.kernel32; hp = k32.OpenProcess(0x0410, False, p.pid)
+        buf = ctypes.create_string_buffer(n); got = ctypes.c_size_t(0)
+        for basev in (0x100000000,):
+            ok = k32.ReadProcessMemory(hp, ctypes.c_void_p(basev + a), buf, n, ctypes.byref(got))
+            print("MEM %08X ok=%d leidos=%d" % (a, ok, got.value), flush=True)
+            if ok: open(out.replace(".png", "_%08X_t%d.bin" % (a, int(t))), "wb").write(buf.raw)
+        k32.CloseHandle(hp); continue
     if k == "SHOT":
         o = out.replace(".png", "_%03d.png" % int(t))
         subprocess.run(["powershell", "-NoProfile", "-Command", ps.replace("HWND", str(h)).replace("OUT", o)], capture_output=True)

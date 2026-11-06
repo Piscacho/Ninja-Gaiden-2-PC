@@ -123,3 +123,35 @@ PPC_FUNC(sub_83661650)
     (void)done;
     __imp__sub_83661650(ctx, base);
 }
+
+// Sesion 21 (diagnostico, NG2_HAIRLOG=1): pelo de Sonia. sub_836ED768(pelo r3, objeto r4) copia la matriz de anclaje
+// (64 bytes desde *(objeto+4)) a pelo+32, simula (sub_836ECF20 x15) y escribe las tiras (sub_836ED380).
+PPC_FUNC_IMPL(__imp__sub_836ED768);
+PPC_FUNC(sub_836ED768)
+{
+    static const bool on = getenv("NG2_HAIRLOG") != nullptr;
+    static std::atomic<int> n{ 0 };
+    uint32_t hair = ctx.r3.u32, obj = ctx.r4.u32;
+    bool log = on && n.fetch_add(1) < 24;
+    auto mat = [](uint32_t a) {
+        std::string s; if (!a) return std::string("(nulo)");
+        for (int i = 0; i < 16; i++) { uint32_t u = Load32(a + i * 4); float f; memcpy(&f, &u, 4); char b[24]; snprintf(b, sizeof(b), "%s%.3g", i % 4 ? " " : " | ", f); s += b; }
+        return s; };
+    if (log)
+    {
+        uint32_t src = Load32(obj + 4);
+        LOG("[hair] pelo %08X obj %08X flag20 %u src %08X:%s", hair, obj, (unsigned)g_base[obj + 20], src, mat(src).c_str());
+    }
+    __imp__sub_836ED768(ctx, base);
+    if (log)
+    {
+        auto vec = [](uint32_t a) { std::string s; for (int i = 0; i < 4; i++) { uint32_t u = Load32(a + i * 4); float f; memcpy(&f, &u, 4); char b[24]; snprintf(b, sizeof(b), " %.3g", f); s += b; } return s; };
+        uint32_t t = Load32(obj + 108), pts = Load32(obj + 100);
+        LOG("[hair]   tipo *(obj+108) = %04X %04X | obj+48:%s | obj+128:%s", t ? (unsigned)__builtin_bswap16(*(uint16_t*)(g_base + t)) : 0xDEAD, t ? (unsigned)__builtin_bswap16(*(uint16_t*)(g_base + t + 2)) : 0xDEAD,
+            vec(obj + 48).c_str(), mat(obj + 128).c_str());
+        { std::string hx; for (int i = 20; i < 100; i++) { char b[4]; snprintf(b, sizeof(b), "%02X", g_base[obj + i]); hx += b; } LOG("[hair]   bytes obj+20..99: %s", hx.c_str()); }
+        { std::string hx; uint32_t o2 = Load32(obj + 112); for (int i = 0; i < 96 && o2; i++) { char b[4]; snprintf(b, sizeof(b), "%02X", g_base[o2 + i]); hx += b; } LOG("[hair]   *(obj+112) @%08X: %s", o2, hx.c_str()); }
+        LOG("[hair]   obj+12 %08X +116 %08X +120 %08X +124 %08X, pelo+16 %08X", Load32(obj + 12), Load32(obj + 116), Load32(obj + 120), Load32(obj + 124), Load32(hair + 16));
+        LOG("[hair]   puntos @%08X: p0%s | p1%s | p2%s | p0+16%s", pts, vec(pts).c_str(), vec(pts + 64).c_str(), vec(pts + 128).c_str(), vec(pts + 16).c_str());
+    }
+}

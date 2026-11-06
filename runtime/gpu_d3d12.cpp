@@ -12,6 +12,7 @@
 #include <cstdarg>
 #include <vector>
 #include <unordered_map>
+#include <map>
 #include <string>
 #include <algorithm>
 #include <cmath>
@@ -2703,6 +2704,47 @@ void D3D12Draw(const XenosDraw& d)
         static const uint32_t cn = getenv("NG2_VSCONSTN") ? atoi(getenv("NG2_VSCONSTN")) : 0;
         static const uint64_t cvs = getenv("NG2_VSCONSTVS") ? strtoull(getenv("NG2_VSCONSTVS"), nullptr, 16) : 0;
         static int logged = 0;
+        {   // NG2_VBUSE=<dir fisica hex>: draws cuyo stream vf0 (slot 95) empieza ahi: VS, n y rango de indices usados (tras NG2_VSCONSTMIN)
+            static const uint32_t vbu = getenv("NG2_VBUSE") ? (uint32_t)strtoul(getenv("NG2_VBUSE"), nullptr, 16) : 0;
+            static const double umin = getenv("NG2_VSCONSTMIN") ? atof(getenv("NG2_VSCONSTMIN")) : 0;
+            static const DWORD ut0 = [] { FILETIME c, e, k, u; GetProcessTimes(GetCurrentProcess(), &c, &e, &k, &u); FILETIME now; GetSystemTimeAsFileTime(&now); uint64_t a = (uint64_t(c.dwHighDateTime) << 32) | c.dwLowDateTime, b = (uint64_t(now.dwHighDateTime) << 32) | now.dwLowDateTime; return GetTickCount() - (DWORD)((b - a) / 10000); }();
+            static int ulog = 0;
+            if (vbu && (Reg(0x4800 + 95 * 2) & 0x1FFFFFFC) == vbu && d.source == 0 && d.indexAddr && ulog < 40 && (GetTickCount() - ut0) / 1000.0 >= umin)
+            {
+                ulog++; uint32_t lo = ~0u, hi = 0;
+                for (uint32_t i = 0; i < d.numIndices; i++)
+                {
+                    uint32_t raw = d.index32 ? *(uint32_t*)(g_base + (0xA0000000u | d.indexAddr) + i * 4) : *(uint16_t*)(g_base + (0xA0000000u | d.indexAddr) + i * 2);
+                    uint32_t idx = d.index32 ? __builtin_bswap32(raw) : __builtin_bswap16((uint16_t)raw);
+                    if (!d.index32 && idx == 0xFFFF) continue;
+                    idx += Reg(0x2102); lo = std::min(lo, idx); hi = std::max(hi, idx);
+                }
+                if (d.vsHash == 0xE7323601B67A98E3ull)
+                {   // E7323601 en la CPU (desensamblado de Xenia): 4 huesos ubyte4 +12, pesos halves +36 (h0..h3): (1-h1-h2-h3, h1, h2, h3)
+                    uint32_t ma = Reg(0x4800 + 94 * 2) & 0x1FFFFFFC;
+                    auto F = [](uint32_t a) { uint32_t u = __builtin_bswap32(*(uint32_t*)(g_base + (0xA0000000u | a))); float f; memcpy(&f, &u, 4); return f; };
+                    auto H = [](uint16_t h) { uint32_t e = (h >> 10) & 31; float r = e == 0 ? (h & 1023) / 1024.0f / 16384.0f : (1 + (h & 1023) / 1024.0f) * powf(2.0f, (float)e - 15); return (h & 0x8000) ? -r : r; };
+                    float c[4][4]; for (int r = 0; r < 4; r++) for (int k = 0; k < 4; k++) { uint32_t u = Reg(0x4000 + (29 + r) * 4 + k); memcpy(&c[r][k], &u, 4); }
+                    float mn[5] = { 1e9f, 1e9f, 1e9f, 1e9f, 1e9f }, mx[5] = { -1e9f, -1e9f, -1e9f, -1e9f, -1e9f }; std::string ex;
+                    for (uint32_t vi = lo; vi <= hi && vi != ~0u; vi++)
+                    {
+                        uint32_t v = vbu + vi * 44; float pp[4] = { F(v), F(v + 4), F(v + 8), 1 };
+                        uint32_t bi = __builtin_bswap32(*(uint32_t*)(g_base + (0xA0000000u | (v + 12))));
+                        uint32_t w0 = __builtin_bswap32(*(uint32_t*)(g_base + (0xA0000000u | (v + 36)))), w1 = __builtin_bswap32(*(uint32_t*)(g_base + (0xA0000000u | (v + 40))));
+                        float h[4] = { H((uint16_t)w0), H((uint16_t)(w0 >> 16)), H((uint16_t)w1), H((uint16_t)(w1 >> 16)) };
+                        float wt[4] = { 1 - h[1] - h[2] - h[3], h[1], h[2], h[3] }; uint32_t b[4] = { bi & 0xFF, (bi >> 8) & 0xFF, (bi >> 16) & 0xFF, bi >> 24 };
+                        float W[3] = {};
+                        for (int j = 0; j < 4; j++) for (int r = 0; r < 3; r++) { float a = 0; for (int k = 0; k < 4; k++) a += pp[k] * F(ma + b[j] * 48 + r * 16 + k * 4); W[r] += wt[j] * a; }
+                        float o[4]; for (int k = 0; k < 4; k++) o[k] = W[0] * c[0][k] + W[1] * c[1][k] + W[2] * c[2][k] + c[3][k];
+                        float q[5] = { W[0], W[1], W[2], o[0] / o[3], o[1] / o[3] };
+                        for (int k = 0; k < 5; k++) { mn[k] = std::min(mn[k], q[k]); mx[k] = std::max(mx[k], q[k]); }
+                        if ((vi - lo) % 400 == 0) { char t[200]; snprintf(t, sizeof(t), " | v%u huesos %u,%u,%u,%u pesos %.2f,%.2f,%.2f,%.2f ndc(%.2f %.2f)", vi, b[0], b[1], b[2], b[3], wt[0], wt[1], wt[2], wt[3], q[3], q[4]); ex += t; }
+                    }
+                    LOG("[vbuse]   E73 en CPU: mundo x %.2f..%.2f y %.2f..%.2f z %.2f..%.2f, pantalla x %.2f..%.2f y %.2f..%.2f%s", mn[0], mx[0], mn[1], mx[1], mn[2], mx[2], mn[3], mx[3], mn[4], mx[4], ex.c_str());
+                }
+                LOG("[vbuse] frame %llu VS %016llX PS %016llX n %u: vertices %u..%u, mascara %X blend %08X", (unsigned long long)g_frameCounter, (unsigned long long)d.vsHash, (unsigned long long)d.psHash, d.numIndices, lo, hi, Reg(0x2104) & 0xF, Reg(0x2201));
+            }
+        }
         if (cvs && d.vsHash == cvs && logged < 16)
         {
             logged++;
@@ -2717,7 +2759,9 @@ void D3D12Draw(const XenosDraw& d)
             }
             LOG("[vsconstvs] VS %016llX n=%u frame %llu: %s", (unsigned long long)d.vsHash, d.numIndices, (unsigned long long)g_frameCounter, m.c_str());
         }
-        if (cn && d.numIndices == cn && logged < 6)
+        static const double cmin = getenv("NG2_VSCONSTMIN") ? atof(getenv("NG2_VSCONSTMIN")) : 0;
+        static const DWORD ct0 = [] { FILETIME c, e, k, u; GetProcessTimes(GetCurrentProcess(), &c, &e, &k, &u); FILETIME now; GetSystemTimeAsFileTime(&now); uint64_t a = (uint64_t(c.dwHighDateTime) << 32) | c.dwLowDateTime, b = (uint64_t(now.dwHighDateTime) << 32) | now.dwLowDateTime; return GetTickCount() - (DWORD)((b - a) / 10000); }();
+        if (cn && d.numIndices == cn && logged < 6 && (GetTickCount() - ct0) / 1000.0 >= cmin)
         {
             logged++;
             int nan = 0, zero = 0, huge = 0;
@@ -2730,6 +2774,77 @@ void D3D12Draw(const XenosDraw& d)
             }
             LOG("[vsconst] VS %016llX PS %016llX frame %llu: NaN/Inf %d, enormes %d, vectores cero %d |%s", (unsigned long long)d.vsHash, (unsigned long long)d.psHash,
                 (unsigned long long)g_frameCounter, nan, huge, zero, cs.c_str());
+            if (d.vsHash == 0xF80101051A52517Cull && d.source == 0 && d.indexAddr)
+            {   // VS F8010105 en la CPU (como el desensamblado de Xenia): dos huesos (ubyte4 +12: x = A, y = B), peso = half alto de +36,
+                // mundo = lerp(A*p, B*p, peso), clip = X*c29 + Y*c30 + Z*c31 + c32
+                uint32_t va = Reg(0x4800 + 95 * 2) & 0x1FFFFFFC, ma = Reg(0x4800 + 94 * 2) & 0x1FFFFFFC, ioff = Reg(0x2102);
+                auto F = [](uint32_t a) { uint32_t u = __builtin_bswap32(*(uint32_t*)(g_base + (0xA0000000u | a))); float f; memcpy(&f, &u, 4); return f; };
+                float c[4][4]; for (int r = 0; r < 4; r++) for (int k = 0; k < 4; k++) { uint32_t u = Reg(0x4000 + (29 + r) * 4 + k); memcpy(&c[r][k], &u, 4); }
+                std::string m;
+                for (uint32_t i = 0; i < d.numIndices && i < 4453; i += d.numIndices / 10 + 1)
+                {
+                    uint32_t raw = d.index32 ? *(uint32_t*)(g_base + (0xA0000000u | d.indexAddr) + i * 4) : *(uint16_t*)(g_base + (0xA0000000u | d.indexAddr) + i * 2);
+                    uint32_t idx = d.index32 ? __builtin_bswap32(raw) : __builtin_bswap16((uint16_t)raw);
+                    if (!d.index32 && idx == 0xFFFF) continue;
+                    idx += ioff;
+                    uint32_t v = va + idx * 44;
+                    float pp[4] = { F(v), F(v + 4), F(v + 8), 1 };
+                    uint32_t bi = __builtin_bswap32(*(uint32_t*)(g_base + (0xA0000000u | (v + 12))));
+                    uint32_t bA = bi & 0xFF, bB = (bi >> 8) & 0xFF;
+                    uint32_t wd = __builtin_bswap32(*(uint32_t*)(g_base + (0xA0000000u | (v + 36))));
+                    auto h2f = [](uint16_t h) { uint32_t s = (h >> 15) & 1, e = (h >> 10) & 31, f = h & 1023; float r = e == 0 ? f / 1024.0f / 16384.0f : (e == 31 ? INFINITY : (1 + f / 1024.0f) * powf(2.0f, (float)e - 15)); return s ? -r : r; };
+                    float w = h2f((uint16_t)(wd >> 16));
+                    float W[3];
+                    for (int r = 0; r < 3; r++)
+                    {
+                        float a = 0, b = 0; for (int k = 0; k < 4; k++) { a += pp[k] * F(ma + bA * 48 + r * 16 + k * 4); b += pp[k] * F(ma + bB * 48 + r * 16 + k * 4); }
+                        W[r] = a + (b - a) * w;
+                    }
+                    float o[4]; for (int k = 0; k < 4; k++) o[k] = W[0] * c[0][k] + W[1] * c[1][k] + W[2] * c[2][k] + c[3][k];
+                    char b[200]; snprintf(b, sizeof(b), " | v%u p(%.3g %.3g %.3g) huesos %u/%u peso %.3g mundo(%.3g %.3g %.3g) ndc(%.2f %.2f) w %.2f", idx, pp[0], pp[1], pp[2], bA, bB, w, W[0], W[1], W[2], o[0] / o[3], o[1] / o[3], o[3]);
+                    m += b;
+                }
+                LOG("[vsconst]   F80 en CPU (indices @%08X, offset %u):%s", d.indexAddr, ioff, m.c_str());
+                {   // todos los vertices: por hueso A, numero, caja del modelo y caja en pantalla
+                    struct Box { uint32_t n = 0; float mn[5] = { 1e9f, 1e9f, 1e9f, 1e9f, 1e9f }, mx[5] = { -1e9f, -1e9f, -1e9f, -1e9f, -1e9f }; };
+                    std::map<uint32_t, Box> boxes;
+                    for (uint32_t i = 0; i < d.numIndices; i++)
+                    {
+                        uint32_t raw = d.index32 ? *(uint32_t*)(g_base + (0xA0000000u | d.indexAddr) + i * 4) : *(uint16_t*)(g_base + (0xA0000000u | d.indexAddr) + i * 2);
+                        uint32_t idx = d.index32 ? __builtin_bswap32(raw) : __builtin_bswap16((uint16_t)raw);
+                        if (!d.index32 && idx == 0xFFFF) continue;
+                        uint32_t v = va + (idx + ioff) * 44;
+                        float pp[4] = { F(v), F(v + 4), F(v + 8), 1 };
+                        uint32_t bi = __builtin_bswap32(*(uint32_t*)(g_base + (0xA0000000u | (v + 12))));
+                        uint32_t bA = bi & 0xFF, bB = (bi >> 8) & 0xFF;
+                        uint32_t wd = __builtin_bswap32(*(uint32_t*)(g_base + (0xA0000000u | (v + 36))));
+                        uint16_t hh = (uint16_t)(wd >> 16); float w = ((hh >> 10) & 31) == 0 ? 0 : (1 + (hh & 1023) / 1024.0f) * powf(2.0f, (float)((hh >> 10) & 31) - 15);
+                        float W[3];
+                        for (int r = 0; r < 3; r++) { float a = 0, b = 0; for (int k = 0; k < 4; k++) { a += pp[k] * F(ma + bA * 48 + r * 16 + k * 4); b += pp[k] * F(ma + bB * 48 + r * 16 + k * 4); } W[r] = a + (b - a) * w; }
+                        float o[4]; for (int k = 0; k < 4; k++) o[k] = W[0] * c[0][k] + W[1] * c[1][k] + W[2] * c[2][k] + c[3][k];
+                        float q[5] = { pp[0], pp[1], pp[2], o[0] / o[3], o[1] / o[3] };
+                        Box& bx = boxes[bA * 256 + bB]; bx.n++;
+                        for (int k = 0; k < 5; k++) { bx.mn[k] = std::min(bx.mn[k], q[k]); bx.mx[k] = std::max(bx.mx[k], q[k]); }
+                    }
+                    {   // todo el bufer de vertices (no solo los de este draw): caja del modelo por grupo de huesos
+                        uint32_t vb = ((Reg(0x4800 + 95 * 2 + 1) >> 2) & 0xFFFFFF) * 4;
+                        float g[3][6]; uint32_t gn[3] = {}; uint32_t gfirst[3] = { ~0u, ~0u, ~0u }, glast[3] = {};
+                        for (auto& r : g) { r[0] = r[1] = r[2] = 1e9f; r[3] = r[4] = r[5] = -1e9f; }
+                        for (uint32_t vi = 0; vi < vb / 44; vi++)
+                        {
+                            uint32_t v = va + vi * 44; uint32_t bi = __builtin_bswap32(*(uint32_t*)(g_base + (0xA0000000u | (v + 12))));
+                            uint32_t bA = bi & 0xFF; int gi = bA == 4 ? 0 : (bA >= 22 && bA <= 78) ? 1 : 2;
+                            float q[3] = { F(v), F(v + 4), F(v + 8) }; gn[gi]++; gfirst[gi] = std::min(gfirst[gi], vi); glast[gi] = vi;
+                            for (int k = 0; k < 3; k++) { g[gi][k] = std::min(g[gi][k], q[k]); g[gi][k + 3] = std::max(g[gi][k + 3], q[k]); }
+                        }
+                        static const char* nm[3] = { "hueso 4", "huesos 22-78", "resto" };
+                        for (int gi = 0; gi < 3; gi++) LOG("[vsconst]     bufer entero, %s: %u vertices (%u..%u), x %.2f..%.2f y %.2f..%.2f z %.2f..%.2f", nm[gi], gn[gi], gfirst[gi], glast[gi], g[gi][0], g[gi][3], g[gi][1], g[gi][4], g[gi][2], g[gi][5]);
+                    }
+                    for (auto& [key, bx] : boxes)
+                        LOG("[vsconst]     huesos %u/%u: %u indices, modelo x %.2f..%.2f y %.2f..%.2f z %.2f..%.2f, pantalla x %.2f..%.2f y %.2f..%.2f", key >> 8, key & 255, bx.n,
+                            bx.mn[0], bx.mx[0], bx.mn[1], bx.mx[1], bx.mn[2], bx.mx[2], bx.mn[3], bx.mx[3], bx.mn[4], bx.mx[4]);
+                }
+            }
             {   // indices de hueso de los vertices (slot 95, paso 44, ubyte4 en +12) y si su matriz (slot 94, 48 bytes) esta vacia
                 uint32_t va = Reg(0x4800 + 95 * 2) & 0x1FFFFFFC, vb = ((Reg(0x4800 + 95 * 2 + 1) >> 2) & 0xFFFFFF) * 4;
                 uint32_t ma = Reg(0x4800 + 94 * 2) & 0x1FFFFFFC, mb = ((Reg(0x4800 + 94 * 2 + 1) >> 2) & 0xFFFFFF) * 4;
@@ -3079,16 +3194,23 @@ static void D3D12DrawImpl(const XenosDraw& d)
             {
                 static std::unordered_map<uint32_t, std::pair<uint64_t, int>> last;
                 auto& e = last[addr];
-                if (e.first && e.first != h && e.second++ < 2)
+                if (e.first && e.first != h && (getenv("NG2_DYNVBMIN") ? true : e.second++ < 2))
                 {
                     const uint32_t* w = (const uint32_t*)src; uint32_t nw = bytes / 4, bad = 0;
                     for (uint32_t i = 0; i < nw; i++) { uint32_t u = __builtin_bswap32(w[i]); float f; memcpy(&f, &u, 4); if (f != f || std::isinf(f)) bad++; }
                     std::string m; for (uint32_t i = 0; i < std::min<uint32_t>(nw, 16); i++) { uint32_t u = __builtin_bswap32(w[i]); float f; memcpy(&f, &u, 4); char b[24]; snprintf(b, sizeof(b), " %.3g", f); m += b; }
-                    if (d.vsHash == 0x9D065E47AE1B06B2ull)
+                    static const double dynMin = getenv("NG2_DYNVBMIN") ? atof(getenv("NG2_DYNVBMIN")) : 0; static const DWORD dynT0 = [] { FILETIME c, e, k, u; GetProcessTimes(GetCurrentProcess(), &c, &e, &k, &u); FILETIME now; GetSystemTimeAsFileTime(&now); uint64_t a = (uint64_t(c.dwHighDateTime) << 32) | c.dwLowDateTime, b = (uint64_t(now.dwHighDateTime) << 32) | now.dwLowDateTime; return GetTickCount() - (DWORD)((b - a) / 10000); }();
+                    if (d.vsHash == 0x9D065E47AE1B06B2ull && (GetTickCount() - dynT0) / 1000.0 >= dynMin)
                     {
                         float mn[3] = { 1e30f, 1e30f, 1e30f }, mxv[3] = { -1e30f, -1e30f, -1e30f };
                         for (uint32_t v = 0; v < nw / 8; v++) for (int k = 0; k < 3; k++) { uint32_t u = __builtin_bswap32(w[v * 8 + k]); float f; memcpy(&f, &u, 4); mn[k] = std::min(mn[k], f); mxv[k] = std::max(mxv[k], f); }
                         auto C = [](int c) { float f[4]; for (int k = 0; k < 4; k++) { uint32_t u = Reg(0x4000 + c * 4 + k); memcpy(&f[k], &u, 4); } char b[96]; snprintf(b, sizeof(b), "c%d=(%.3g %.3g %.3g %.3g) ", c, f[0], f[1], f[2], f[3]); return std::string(b); };
+                        {   // centro de la tira en pantalla con c21-c24 (pos.x*c21 + pos.y*c22 + pos.z*c23 + c24)
+                            float c[4][4]; for (int r = 0; r < 4; r++) for (int k = 0; k < 4; k++) { uint32_t u = Reg(0x4000 + (21 + r) * 4 + k); memcpy(&c[r][k], &u, 4); }
+                            float p[3] = { (mn[0] + mxv[0]) / 2, (mn[1] + mxv[1]) / 2, (mn[2] + mxv[2]) / 2 }, o[4];
+                            for (int k = 0; k < 4; k++) o[k] = p[0] * c[0][k] + p[1] * c[1][k] + p[2] * c[2][k] + c[3][k];
+                            LOG("[dynvb] pelo? t=%.1f centro en pantalla NDC (%.2f, %.2f) z %.3f w %.2f", (GetTickCount() - dynT0) / 1000.0, o[0] / o[3], o[1] / o[3], o[2] / o[3], o[3]);
+                        }
                         LOG("[dynvb] pelo? %u vertices, x %.3g..%.3g y %.3g..%.3g z %.3g..%.3g | %s%s%s%s", nw / 8, mn[0], mxv[0], mn[1], mxv[1], mn[2], mxv[2], C(21).c_str(), C(22).c_str(), C(23).c_str(), C(24).c_str());
                     }
                     LOG("[dynvb] VS %016llX PS %016llX slot %u @%08X %u B, n %u prim %u, NaN %u |%s", (unsigned long long)d.vsHash, (unsigned long long)d.psHash, vf, addr, bytes, d.numIndices, d.primType, bad, m.c_str());
