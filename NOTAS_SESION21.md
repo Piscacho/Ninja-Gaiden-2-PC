@@ -72,3 +72,19 @@ Siguiente:
 Siguiente: encontrar dónde la actualización del esqueleto (`sub_8247B2A8`) trata los nodos con conductor de tipo 4 (la que
 debería tomar los puntos simulados), y comparar los nodos 0x84E78000 con Xenia (`MEM-84E78000-2000` con `tools/xenia_drive.py`)
 cuando no haya otra ventana en primer plano.
+
+## Cuarta parte (sin Xenia)
+
+- Ganchos en todos los métodos del conductor (vtable 0x82282CD0): **nunca se llaman para los conductores del pelo**. (Las
+  llamadas registradas desde `sub_837BE730` son del bucle principal sobre el objeto de escena, que cae en el mismo rango de
+  direcciones: falso positivo.) El método de tipo ([10], desplazamiento 40) no lo pregunta nadie.
+- Funciones que leen `nodo+112` y llaman al desplazamiento 40 de una vtable: `sub_837F9B30`, `sub_838024F8`, `sub_838026D8`,
+  `sub_838029C8`, `sub_83803220`, `sub_83869370`. En la cinemática solo se ejecutan `sub_837F9B30` y `sub_83869370`, y con
+  objetos que no son los nodos de Sonia.
+- Conclusión provisional: algo debería recorrer los nodos con conductor (o llamar a sus métodos) para aplicar la simulación a
+  los huesos 22-78, y en nuestra versión no ocurre. Sin comparar con Xenia no está claro si falta esa llamada o si los conductores
+  son solo marcas y la aplicación está en otro sitio.
+
+Siguiente (lo más rápido): con Xenia y sin otra ventana delante, leer los nodos 0x84E78000 (¿los hijos de cada mechón tienen
+otra rotación?) y la lista de conductores de un nodo raíz (+112) para ver si allí cambian. Alternativa sin Xenia: vigilar
+lecturas (no escrituras) de los puntos simulados de un mechón para ver qué código los consume además del escritor de tiras.

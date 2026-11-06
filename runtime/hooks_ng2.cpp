@@ -190,3 +190,37 @@ PPC_FUNC(sub_836FA630)
     __imp__sub_836FA630(ctx, base);
     if (on && (k < 12 || k % 3000 == 0)) LOG("[hair] FA630 llamada %d obj %08X modelo %08X obj+12 %08X global %08X -> %llX", k, a3, a4, Load32(a3 + 12), Load32(0x84BA235C), (unsigned long long)ctx.r3.u64);
 }
+
+// Sesion 21 (diagnostico, NG2_HAIRLOG=1): quien llama a los metodos de los conductores del pelo (objetos en 0x40283500-0x40284700)
+static void DriverCallLog(const char* slot, PPCContext& ctx)
+{
+    static const bool on = getenv("NG2_HAIRLOG") != nullptr;
+    if (!on || ctx.r3.u32 < 0x40283500 || ctx.r3.u32 >= 0x40284700) return;
+    static std::atomic<int> n{ 0 }; int k = n.fetch_add(1);
+    if (k < 40 || k % 2000 == 0) LOG("[hair] conductor %s r3 %08X r4 %08X r5 %08X lr %08X (llamada %d)", slot, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, (uint32_t)ctx.lr, k);
+}
+#define NG2_DRIVER_HOOK(addr, slot) PPC_FUNC_IMPL(__imp__sub_##addr); PPC_FUNC(sub_##addr) { DriverCallLog(slot, ctx); __imp__sub_##addr(ctx, base); }
+NG2_DRIVER_HOOK(82318CB8, "[1]")
+NG2_DRIVER_HOOK(82831588, "[3]")
+NG2_DRIVER_HOOK(82318D10, "[4]")
+NG2_DRIVER_HOOK(828315B0, "[5]")
+NG2_DRIVER_HOOK(82318D38, "[6]")
+NG2_DRIVER_HOOK(82318D60, "[7]")
+NG2_DRIVER_HOOK(82318D88, "[8]")
+NG2_DRIVER_HOOK(82318DB0, "[9]")
+NG2_DRIVER_HOOK(836EDBA0, "[10]")
+
+// Sesion 21 (diagnostico, NG2_HAIRLOG=1): funciones que recorren la lista de conductores de un nodo y preguntan su tipo
+static void TypeWalkLog(const char* name, PPCContext& ctx)
+{
+    static const bool on = getenv("NG2_HAIRLOG") != nullptr; if (!on) return;
+    static std::atomic<int> n{ 0 }; int k = n.fetch_add(1);
+    if (k < 30 || k % 5000 == 0) LOG("[hair] %s r3 %08X r4 %08X r5 %08X lr %08X (llamada %d)", name, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, (uint32_t)ctx.lr, k);
+}
+#define NG2_TYPEWALK_HOOK(addr) PPC_FUNC_IMPL(__imp__sub_##addr); PPC_FUNC(sub_##addr) { TypeWalkLog("sub_" #addr, ctx); __imp__sub_##addr(ctx, base); }
+NG2_TYPEWALK_HOOK(837F9B30)
+NG2_TYPEWALK_HOOK(838024F8)
+NG2_TYPEWALK_HOOK(838026D8)
+NG2_TYPEWALK_HOOK(838029C8)
+NG2_TYPEWALK_HOOK(83803220)
+NG2_TYPEWALK_HOOK(83869370)
