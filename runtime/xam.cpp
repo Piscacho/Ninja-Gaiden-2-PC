@@ -144,7 +144,8 @@ GUEST_IMPL(XNotifyPositionUI) { ctx.r3.u64 = 0; }
 // XamContentCreateEnumerator(user_index, device_id, content_type, content_flags, items_per_enumerate, buffer_size_ptr, handle_out)
 // Sesion 16: enumera las partidas de userdata\content (un <carpeta>.xcd con el XCONTENT_DATA de 0x134 bytes por cada una).
 std::string FsContentDir();
-struct ContentEnum : KObject { std::vector<std::vector<uint8_t>> items; size_t next = 0; uint32_t perCall = 1; uint32_t itemSize = 0x134; };
+struct ContentEnum : KObject { std::vector<std::vector<uint8_t>> items; size_t next = 0; uint32_t perCall = 1; uint32_t itemSize = 0x134;
+    ~ContentEnum() override { if (guestPtr) GuestFree(guestPtr); } };   // sesion 23: devuelve su bloque al cerrarse
 int FsMountContent(const std::string& root, const std::string& folder, bool create);   // fs.cpp
 // Lista de XCONTENT_DATA (0x134 bytes) de un tipo de contenido en userdata\content
 static std::vector<std::vector<uint8_t>> ListContent(uint32_t type)
@@ -216,10 +217,9 @@ GUEST_IMPL(XamUserCreateAchievementEnumerator)
     uint32_t count = ctx.r8.u32 ? ctx.r8.u32 : 1;
     if (ctx.r9.u32) Store32(ctx.r9.u32, count * (0x24 + 0x200));   // X_XACHIEVEMENT_DETAILS + cadenas
     auto o = std::make_shared<ContentEnum>();
-    o->guestPtr = GuestAllocKernel(0x40, 0x10);
-    o->itemSize = 0x24;
+    o->itemSize = 0x24;   // sesion 23: sin objeto en memoria de invitado (el juego lo pide ~1 vez por segundo y llenaba el monton)
     if (ctx.r10.u32) Store32(ctx.r10.u32, InsertHandle(o));
-    LOG("[xam] XamUserCreateAchievementEnumerator(titulo %08X, usuario %u, %u logros) -> vacio", ctx.r3.u32, ctx.r4.u32, ctx.r8.u32);
+    { static int nlog = 0; if (nlog++ < 20) LOG("[xam] XamUserCreateAchievementEnumerator(titulo %08X, usuario %u, %u logros) -> vacio", ctx.r3.u32, ctx.r4.u32, ctx.r8.u32); }
     ctx.r3.u64 = X_ERROR_SUCCESS;
 }
 GUEST_IMPL(XamContentCreateEnumerator)
@@ -945,7 +945,7 @@ GUEST_IMPL(XamEnumerate)
     if (auto e = std::dynamic_pointer_cast<ContentEnum>(GetHandleObject(ctx.r3.u32)))
     {
         uint32_t buf = ctx.r5.u32, cap = ctx.r6.u32 / e->itemSize, n = 0;
-        LOG("[xam] XamEnumerate(handle %08X, buffer %u bytes, overlapped %08X): %zu/%zu elementos", ctx.r3.u32, ctx.r6.u32, ctx.r8.u32, e->next, e->items.size());
+        { static int nlog = 0; if (nlog++ < 40) LOG("[xam] XamEnumerate(handle %08X, buffer %u bytes, overlapped %08X): %zu/%zu elementos", ctx.r3.u32, ctx.r6.u32, ctx.r8.u32, e->next, e->items.size()); }
         while (e->next < e->items.size() && n < cap && n < e->perCall)
         {
             memcpy(g_base + buf + n * e->itemSize, e->items[e->next].data(), e->itemSize);

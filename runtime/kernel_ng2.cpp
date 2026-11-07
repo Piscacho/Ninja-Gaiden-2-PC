@@ -293,7 +293,7 @@ GUEST_IMPL(ExAllocatePoolTypeWithTag)
     { std::lock_guard l(g_sizeMutex); g_poolSizes[a] = ctx.r3.u32; }
     ctx.r3.u64 = a;
 }
-GUEST_IMPL(ExFreePool) {}
+GUEST_IMPL(ExFreePool) { uint32_t a = ctx.r3.u32; if (GuestFree(a)) { std::lock_guard l(g_sizeMutex); g_poolSizes.erase(a); } }
 GUEST_IMPL(MmQueryAllocationSize)
 {
     std::lock_guard l(g_sizeMutex);

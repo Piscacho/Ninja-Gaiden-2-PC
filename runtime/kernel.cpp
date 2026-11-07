@@ -7,27 +7,83 @@
 #include <mutex>
 #include <atomic>
 #include <cstring>
+#include <map>
+#include <unordered_map>
 
 thread_local GuestThreadState t_thread;
 // Hilos, handles y sincronizacion: threads.cpp. Archivos: fs.cpp.
 
 // ---------------- memoria ----------------
 static std::mutex g_allocMutex;
-static uint32_t g_virtTop = 0x40000000, g_physTop = 0xA0000000, g_kernTop = 0x7FFF0000 - 0x01000000;
 
-static uint32_t Bump(uint32_t& top, uint32_t limit, uint32_t size, uint32_t align)
+// Sesion 23: asignador con liberacion. Antes era de solo avance (Bump) y NtFreeVirtualMemory/MmFreePhysicalMemory/ExFreePool no
+// hacian nada: en una partida larga (~6 min) el juego se quedaba sin memoria ("sin memoria de invitado") y dejaba de dibujar.
+// Cada monton guarda sus reservas (direccion -> tamano) y una lista de huecos libres ordenada y fusionada; reserva en el primer
+// hueco que quepa (con su alineacion) y si no, avanza el tope. NG2_NOGUESTFREE=1 = comportamiento antiguo (no libera).
+struct GuestHeap
+{
+    const char* name; uint32_t top, limit;
+    std::map<uint32_t, uint32_t> free;              // hueco: inicio -> tamano
+    std::unordered_map<uint32_t, uint32_t> live;    // reserva: inicio -> tamano
+    uint64_t liveBytes = 0;
+};
+static GuestHeap g_heapVirt{ "virtual", 0x40000000, 0x7EFF0000 }, g_heapPhys{ "fisica", 0xA0000000, 0xBFFF0000 }, g_heapKern{ "kernel", 0x7FFF0000 - 0x01000000, 0x7FFF0000 };
+static uint32_t HeapAlloc(GuestHeap& h, uint32_t size, uint32_t align)
 {
     std::lock_guard lock(g_allocMutex);
-    uint32_t a = (top + align - 1) & ~(align - 1);
-    if (uint64_t(a) + size > limit) { LOG("[mem] sin memoria de invitado (size=0x%X)", size); return 0; }
-    top = a + size;
+    if (!size) size = 1;
+    if (!align) align = 1;
+    uint32_t a = 0;
+    for (auto it = h.free.begin(); it != h.free.end(); ++it)
+    {
+        uint32_t s = it->first, n = it->second, as = (s + align - 1) & ~(align - 1);
+        if (uint64_t(as) + size > uint64_t(s) + n) continue;
+        h.free.erase(it);
+        if (as > s) h.free[s] = as - s;                                     // resto delante (por la alineacion)
+        if (uint64_t(as) + size < uint64_t(s) + n) h.free[as + size] = uint32_t(uint64_t(s) + n - (as + size));   // resto detras
+        a = as; break;
+    }
+    if (!a)
+    {
+        uint32_t as = (h.top + align - 1) & ~(align - 1);
+        if (uint64_t(as) + size > h.limit)
+        {
+            static int logged = 0;
+            if (logged++ < 20) LOG("[mem] sin memoria de invitado (size=0x%X, monton %s, en uso %llu KB, huecos %zu)", size, h.name, (unsigned long long)(h.liveBytes >> 10), h.free.size());
+            return 0;
+        }
+        if (as > h.top) h.free[h.top] = as - h.top;
+        h.top = as + size; a = as;
+    }
+    h.live[a] = size; h.liveBytes += size;
     memset(g_base + a, 0, size);
     return a;
 }
-uint32_t GuestAllocVirtual(uint32_t size, uint32_t align) { return Bump(g_virtTop, 0x7EFF0000, size, align); }
-uint32_t GuestAllocPhysical(uint32_t size, uint32_t align) { return Bump(g_physTop, 0xBFFF0000, size, align); }
-uint32_t GuestAllocKernel(uint32_t size, uint32_t align) { return Bump(g_kernTop, 0x7FFF0000, size, align); }
-void GuestAllocTops(uint32_t& virt, uint32_t& phys) { virt = g_virtTop; phys = g_physTop; }   // diagnostico (sesion 24)
+static bool HeapFree(GuestHeap& h, uint32_t a)
+{
+    static const bool noFree = getenv("NG2_NOGUESTFREE") != nullptr;
+    if (noFree) return false;
+    std::lock_guard lock(g_allocMutex);
+    auto it = h.live.find(a);
+    if (it == h.live.end()) return false;
+    uint32_t s = a, n = it->second; h.liveBytes -= n; h.live.erase(it);
+    auto nx = h.free.lower_bound(s);
+    if (nx != h.free.end() && nx->first == s + n) { n += nx->second; nx = h.free.erase(nx); }    // fusiona con el siguiente
+    if (nx != h.free.begin()) { auto pv = std::prev(nx); if (pv->first + pv->second == s) { s = pv->first; n += pv->second; h.free.erase(pv); } }   // y con el anterior
+    if (s + n == h.top) h.top = s; else h.free[s] = n;                                         // al final: baja el tope
+    return true;
+}
+uint32_t GuestAllocVirtual(uint32_t size, uint32_t align) { return HeapAlloc(g_heapVirt, size, align); }
+uint32_t GuestAllocPhysical(uint32_t size, uint32_t align) { return HeapAlloc(g_heapPhys, size, align); }
+uint32_t GuestAllocKernel(uint32_t size, uint32_t align) { return HeapAlloc(g_heapKern, size, align); }
+bool GuestFree(uint32_t a)
+{
+    if (a >= 0xA0000000 && a < 0xC0000000) return HeapFree(g_heapPhys, a);
+    if (a >= g_heapKern.limit - 0x01000000 && a < g_heapKern.limit) return HeapFree(g_heapKern, a);
+    if (a >= 0x40000000 && a < 0x7EFF0000) return HeapFree(g_heapVirt, a);
+    return false;
+}
+void GuestAllocTops(uint32_t& virt, uint32_t& phys) { virt = g_heapVirt.top; phys = g_heapPhys.top; }   // diagnostico (sesion 24)
 
 // ---------------- cabeceras XEX ----------------
 static uint32_t g_xexHeaderSize = 0;
@@ -141,14 +197,20 @@ GUEST_IMPL(NtAllocateVirtualMemory)
     Store32(pSize, size);
     ctx.r3.u64 = 0;
 }
-GUEST_IMPL(NtFreeVirtualMemory) { ctx.r3.u64 = 0; }
+// NtFreeVirtualMemory(uint32_t* base_ptr, uint32_t* size_ptr, free_type, debug): solo MEM_RELEASE (0x8000) libera la reserva
+GUEST_IMPL(NtFreeVirtualMemory)
+{
+    uint32_t pBase = ctx.r3.u32, type = ctx.r5.u32;
+    if (pBase && (type & 0x8000)) GuestFree(Load32(pBase));
+    ctx.r3.u64 = 0;
+}
 // MmAllocatePhysicalMemoryEx(flags, size, protect, min_addr, max_addr, alignment)
 GUEST_IMPL(MmAllocatePhysicalMemoryEx)
 {
     uint32_t align = ctx.r8.u32 > 0x10000 ? ctx.r8.u32 : 0x10000;
     ctx.r3.u64 = GuestAllocPhysical((ctx.r4.u32 + 0xFFF) & ~0xFFF, align);
 }
-GUEST_IMPL(MmFreePhysicalMemory) { ctx.r3.u64 = 0; }
+GUEST_IMPL(MmFreePhysicalMemory) { GuestFree(ctx.r4.u32); ctx.r3.u64 = 0; }   // (type, address)
 GUEST_IMPL(MmGetPhysicalAddress) { ctx.r3.u64 = ctx.r3.u32 & 0x1FFFFFFF; }
 uint32_t QueryGuestProtect(uint32_t addr);   // kernel_ng2.cpp
 GUEST_IMPL(MmQueryAddressProtect) { ctx.r3.u64 = QueryGuestProtect(ctx.r3.u32); }

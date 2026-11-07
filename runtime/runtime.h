@@ -11,6 +11,7 @@ extern uint8_t* g_base;              // base de la memoria de invitado (4 GB)
 uint32_t GuestAllocVirtual(uint32_t size, uint32_t align = 0x1000);   // 0x40000000..0x7FFF0000
 uint32_t GuestAllocPhysical(uint32_t size, uint32_t align = 0x10000); // 0xA0000000..0xBFFFFFFF
 uint32_t GuestAllocKernel(uint32_t size, uint32_t align = 0x10);      // objetos del "kernel"
+bool GuestFree(uint32_t addr);   // sesion 23: libera una reserva hecha con GuestAlloc* (false si no lo es)
 
 inline void* GuestToHost(uint32_t addr) { return g_base + addr; }
 inline uint32_t Load32(uint32_t a) { return __builtin_bswap32(*(uint32_t*)(g_base + a)); }

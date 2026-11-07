@@ -116,6 +116,44 @@ static const DXGI_FORMAT kDepthSrvFmt = g_depth32 ? DXGI_FORMAT_R32_FLOAT_X8X24_
 struct ShaderEntry { bool ok = false; ComPtr<ID3DBlob> blob; TranslatedShader info; };
 std::unordered_map<uint64_t, ShaderEntry> g_shaders;
 std::unordered_map<uint64_t, ComPtr<ID3D12PipelineState>> g_psos;
+// Sesion 23 (rendimiento): biblioteca de PSO en disco (shadercache/pso.lib, ID3D12PipelineLibrary). Las partidas siguientes cargan
+// los PSO ya vistos en vez de crearlos (61 PSO nuevos en un corte de escena = 22 ms). Si el controlador no acepta el archivo
+// (otra version), se empieza una biblioteca vacia. Medido: sin mejora (el controlador ya cachea); solo con NG2_PSOLIB=1.
+static ComPtr<ID3D12PipelineLibrary> g_psoLib; static std::vector<uint8_t> g_psoLibBlob; static int g_psoLibDirty = 0;
+static void SavePsoLib()
+{
+    if (!g_psoLib || !g_psoLibDirty) return;
+    SIZE_T n = g_psoLib->GetSerializedSize(); std::vector<uint8_t> buf(n);
+    if (n && SUCCEEDED(g_psoLib->Serialize(buf.data(), n)))
+    {
+        CreateDirectoryA("shadercache", nullptr);
+        if (FILE* f = fopen("shadercache/pso.tmp", "wb")) { fwrite(buf.data(), 1, n, f); fclose(f); MoveFileExA("shadercache/pso.tmp", "shadercache/pso.lib", MOVEFILE_REPLACE_EXISTING); }
+    }
+    g_psoLibDirty = 0;
+}
+static HRESULT CreatePsoCached(uint64_t key, const D3D12_GRAPHICS_PIPELINE_STATE_DESC& pd, ComPtr<ID3D12PipelineState>& out)
+{
+    static const bool off = getenv("NG2_PSOLIB") == nullptr;   // por defecto desactivada: el controlador ya cachea (sin mejora medida)
+    static bool init = false;
+    if (!off && !init)
+    {
+        init = true;
+        ComPtr<ID3D12Device1> d1;
+        if (SUCCEEDED(g_dev.As(&d1)))
+        {
+            if (FILE* f = fopen("shadercache/pso.lib", "rb")) { fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET); if (n > 0) { g_psoLibBlob.resize(n); if (fread(g_psoLibBlob.data(), 1, n, f) != (size_t)n) g_psoLibBlob.clear(); } fclose(f); }
+            HRESULT hr = g_psoLibBlob.empty() ? E_FAIL : d1->CreatePipelineLibrary(g_psoLibBlob.data(), g_psoLibBlob.size(), IID_PPV_ARGS(&g_psoLib));
+            if (FAILED(hr)) { g_psoLibBlob.clear(); d1->CreatePipelineLibrary(nullptr, 0, IID_PPV_ARGS(&g_psoLib)); }
+            LOG("[d3d12] biblioteca de PSO: %s (%zu bytes)", g_psoLib ? (SUCCEEDED(hr) ? "cargada" : "nueva") : "no disponible", g_psoLibBlob.size());
+        }
+    }
+    if (!g_psoLib) return g_dev->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&out));
+    wchar_t name[24]; swprintf(name, 24, L"%016llX", (unsigned long long)key);
+    if (SUCCEEDED(g_psoLib->LoadGraphicsPipeline(name, &pd, IID_PPV_ARGS(&out)))) return S_OK;
+    HRESULT hr = g_dev->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&out));
+    if (SUCCEEDED(hr) && SUCCEEDED(g_psoLib->StorePipeline(name, out.Get())) && ++g_psoLibDirty >= 24) SavePsoLib();
+    return hr;
+}
 
 // Copia de profundidad: constantes = origen en muestras (x, y) y paso de muestreo (msx, msy)
 const char* kDepthCopyHlsl = R"(
@@ -1450,7 +1488,9 @@ bool BindTexture(uint32_t tf, D3D12_CPU_DESCRIPTOR_HANDLE slot)
         };
         double tf0 = QpcMs(); g_hTexUp++;
         fillLevel(src, bw, bh, tiled ? ((pitchBlocks + 31) & ~31u) : pitchBlocks, pkX, pkY, dst, rowPitch);
-        struct FillTimer { double t; ~FillTimer() { g_hTexFillMs += QpcMs() - t; } } fillTimer{ tf0 };
+        struct FillTimer { double t; uint32_t base, fmt, w, h, lv; bool tl; ~FillTimer() { double d = QpcMs() - t; g_hTexFillMs += d;
+            static int slow = 0; if (d > 8 && slow++ < 20) LOG("[d3d12] subida lenta: textura %08X formato %u %ux%u, %u niveles, %s: %.1f ms", base, fmt, w, h, lv, tl ? "tiled" : "lineal", d); } }
+            fillTimer{ tf0, base, fmt, w, h, levels, tiled };
         // NG2_TEXDUMP=<base hex>: guarda los datos ya destileados de esa textura (formato sin bloques) en texdump_*.raw (sesion 24)
         if (static const char* td = getenv("NG2_TEXDUMP"); td && (base & 0xFFFFF000) == ((uint32_t)strtoul(td, nullptr, 16) & 0xFFFFF000))
         {
@@ -1788,9 +1828,11 @@ float DecodeDepth24(uint32_t v24, bool isFloat)
 {
     if (!isFloat) return v24 / 16777215.0f;
     // 20e4: 4 bits de exponente (sesgo 15), 20 de mantisa
+    // Sesion 23 (rendimiento): con bits en vez de ldexpf (las texturas de profundidad de 1024x1024 tardaban 37 ms en subirse).
+    // Exacto: exponente + 112 (127 - 15) y la mantisa de 20 bits en los 20 altos de la de 23; los desnormales, m * 2^-34.
     uint32_t e = v24 >> 20, m = v24 & 0xFFFFF;
-    if (!e) return ldexpf((float)m, -20 - 14);
-    return ldexpf(1.0f + m / 1048576.0f, (int)e - 15);
+    if (!e) return (float)m * 5.820766091346741e-11f;   // 2^-34
+    uint32_t bits = ((e + 112u) << 23) | (m << 3); float f; memcpy(&f, &bits, 4); return f;
 }
 
 D3D12_COMPARISON_FUNC MapCmp(uint32_t f)
@@ -3177,7 +3219,7 @@ static void D3D12DrawImpl(const XenosDraw& d)
         pd.IBStripCutValue = D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_0xFFFFFFFF;   // indices de reinicio = 0xFFFFFFFF
         pd.NumRenderTargets = rt1 ? 2 : 1; pd.RTVFormats[0] = curRt->fmt; pd.SampleDesc.Count = 1;
         if (rt1) pd.RTVFormats[1] = rt1->fmt;
-        double tPso = QpcMs(); HRESULT hrPso = g_dev->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&pso)); g_hPsoMs += QpcMs() - tPso; g_hPsos++;
+        double tPso = QpcMs(); HRESULT hrPso = CreatePsoCached(key, pd, pso); g_hPsoMs += QpcMs() - tPso; g_hPsos++;
         if (FAILED(hrPso)) { static int psoFailLog = 0; if (psoFailLog++ < 12) LOG("[d3d12] PSO fallido hr=%08X (prim %u, formato RT %d, rt1 %d) VS %016llX PS %016llX bc=%08X dc=%08X mask=%X", (unsigned)hrPso, d.primType, (int)curRt->fmt, rt1 ? (int)rt1->fmt : -1, (unsigned long long)d.vsHash, (unsigned long long)d.psHash, bc, useDepth ? dc : 0, colorMask); g_skipped[2]++; return; }
     }
 
@@ -3848,6 +3890,7 @@ bool D3D12Present(HWND hwnd, const uint32_t* pixels, uint32_t w, uint32_t h)
     static long long dumpAt = getenv("NG2_DUMPFRAME") ? atoll(getenv("NG2_DUMPFRAME")) : -1;
     ++frames;
     if ((long long)frames == dumpAt) { g_fence->SetEventOnCompletion(g_nextFence - 1, g_fenceEvent); WaitForSingleObject(g_fenceEvent, 5000); DumpEdram(frames); }
+    if (frames % 600 == 0) SavePsoLib();   // sesion 23: guarda los PSO nuevos que queden pendientes
     if (frames % 120 == 0) LOG("[d3d12] frame %llu: draws %llu, omitidos prim=%llu shader=%llu pso=%llu mem=%llu, shaders %zu, psos %zu, resolves %llu (frontbuffer %llu), superficies %zu",
         (unsigned long long)frames, (unsigned long long)g_frameDraws, (unsigned long long)g_skipped[0], (unsigned long long)g_skipped[1],
         (unsigned long long)g_skipped[2], (unsigned long long)g_skipped[3], g_shaders.size(), g_psos.size(), (unsigned long long)g_resolves, (unsigned long long)g_fbResolves, g_edramRts.size());
