@@ -356,7 +356,7 @@ GUEST_IMPL(NtReadFile)
     SetIoStatus(ctx.r7.u32, st, got);
     SignalEvent(ctx.r4.u32);
     static const bool readLog = getenv("NG2_READLOG") != nullptr;   // NG2 (sesion 3): cada lectura
-    if (readLog) LOG("[fs] leer %s @0x%llX 0x%X -> 0x%X (st 0x%X, evento %08X, apc %08X)", f->path.c_str(), (unsigned long long)pos0, ctx.r9.u32, got, st, ctx.r4.u32, ctx.r5.u32);
+    if (readLog) LOG("[fs] leer %s @0x%llX 0x%X -> 0x%X en %08X (st 0x%X, evento %08X, apc %08X)", f->path.c_str(), (unsigned long long)pos0, ctx.r9.u32, got, ctx.r8.u32, st, ctx.r4.u32, ctx.r5.u32);
     if (ctx.r5.u32) QueueIoApc(ctx.r5.u32, ctx.r6.u32, ctx.r7.u32);
     ctx.r3.u64 = st;
 }

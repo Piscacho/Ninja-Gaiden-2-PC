@@ -65,3 +65,13 @@ Diagnósticos nuevos: `NG2_EFFLOG=1` (ganchos en `sub_8365D730`, `sub_822FF5A8`,
   `ng2_hit_data.dat`) que no coincide con el que calculamos, mientras que los del escenario se piden por índice. Siguiente: localizar
   la búsqueda de efectos por golpe (llamadas desde el código de daño/muerte) y comprobar si encuentra el efecto.
 - La estructura 0x83BBC090 es un gestor global de recursos (409 referencias): no sirve para llegar rápido al disparador.
+
+## Cuarta parte
+
+- `ng2_hit_data.dat` se carga en 0xA549C000 (0xD600 bytes; `NG2_READLOG=1` ahora registra el destino de cada lectura). En
+  combate lo lee el código de golpes: `sub_82417060` (← `sub_82416DD8` ← `sub_82416B80` ← `sub_823778F8`, actualización del
+  personaje) y sus llamadas `sub_82418130` / `sub_82418008`.
+- `sub_82418130` llama a `sub_8370AB48(indice)`, que busca el bloque de tipo 33 de un recurso en la tabla de *(0x83BBC090 + 112)
+  (326 entradas). **Nunca falla** (10 001 llamadas en combate, 0 nulas): descartado.
+- Siguiente: seguir desde `sub_82417060` hacia lo que hace con un golpe acertado (¿llama a un generador de efectos?), y con Xenia,
+  volcar los shaders de un combate para identificar los de sangre/almas.

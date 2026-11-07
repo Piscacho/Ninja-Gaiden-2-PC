@@ -264,3 +264,15 @@ PPC_FUNC(sub_823D6F00)
     __imp__sub_823D6F00(ctx, base);
     if (on && n.fetch_add(1) < 60) LOG("[eff] sub_823D6F00(%u, %08X, %08X) -> %llX", a3, a4, a5, (unsigned long long)ctx.r3.u64);
 }
+// Sesion 24 (diagnostico, NG2_EFFLOG=1): sub_8370AB48(indice) busca el bloque de tipo 33 de un recurso (tabla en
+// *(0x83BBC090 + 112)); lo llama el codigo de golpes (sub_82418130). Cuenta aciertos y fallos.
+PPC_FUNC_IMPL(__imp__sub_8370AB48);
+PPC_FUNC(sub_8370AB48)
+{
+    static const bool on = getenv("NG2_EFFLOG") != nullptr; static std::atomic<int> n{ 0 }, nz{ 0 };
+    uint32_t a3 = ctx.r3.u32;
+    __imp__sub_8370AB48(ctx, base);
+    if (!on) return;
+    int k = n.fetch_add(1); if (ctx.r3.u32 == 0) nz++;
+    if (k < 30 || k % 2000 == 0) LOG("[eff] sub_8370AB48(%u) -> %08X (llamadas %d, nulas %d, lr %08X, tabla %08X, limite %u)", a3 & 0xFFFF, ctx.r3.u32, k + 1, nz.load(), (uint32_t)ctx.lr, Load32(0x83BBC090 + 112), Load32(0x84C236A4));
+}
