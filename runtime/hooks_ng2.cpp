@@ -276,3 +276,18 @@ PPC_FUNC(sub_8370AB48)
     int k = n.fetch_add(1); if (ctx.r3.u32 == 0) nz++;
     if (k < 30 || k % 2000 == 0) LOG("[eff] sub_8370AB48(%u) -> %08X (llamadas %d, nulas %d, lr %08X, tabla %08X, limite %u)", a3 & 0xFFFF, ctx.r3.u32, k + 1, nz.load(), (uint32_t)ctx.lr, Load32(0x83BBC090 + 112), Load32(0x84C236A4));
 }
+
+// Sesion 25 (diagnostico, NG2_PATHLOG=1): tiempo de sub_82385A00 (busqueda en un grafo de 256 nodos durante las cargas de zona;
+// aparece en los tirones de 130 ms del hilo principal).
+PPC_FUNC_IMPL(__imp__sub_82385A00);
+PPC_FUNC(sub_82385A00)
+{
+    static const bool on = getenv("NG2_PATHLOG") != nullptr;
+    if (!on) { __imp__sub_82385A00(ctx, base); return; }
+    LARGE_INTEGER f, a, b; QueryPerformanceFrequency(&f); QueryPerformanceCounter(&a);
+    uint32_t r3 = ctx.r3.u32, r4 = ctx.r4.u32, r5 = ctx.r5.u32, lr = (uint32_t)ctx.lr;
+    __imp__sub_82385A00(ctx, base);
+    QueryPerformanceCounter(&b);
+    static int n = 0; static double tot = 0; double ms = (b.QuadPart - a.QuadPart) * 1000.0 / f.QuadPart; tot += ms; n++;
+    if (ms > 1.0 || n % 500 == 0) LOG("[path] sub_82385A00(%08X, %08X, %08X) lr %08X: %.2f ms -> %08X (llamadas %d, total %.0f ms)", r3, r4, r5, lr, ms, ctx.r3.u32, n, tot);
+}

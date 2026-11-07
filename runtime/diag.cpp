@@ -156,8 +156,77 @@ static void StartPatWatch()
         }
     }).detach();
 }
+
+// Sesion 25: NG2_HITCHPROF=<ms>: muestrea todos los hilos cada ~2 ms en un anillo y, cuando un frame tarda mas de <ms>, vuelca las
+// muestras de ese intervalo que no estaban en esperas del sistema (lineas [prof] T<tid>:<entrada>, para tools\profagg.py).
+namespace
+{
+struct HpSample { double t; DWORD tid; uint32_t entry; int n; bool wait; uint64_t pc[10]; };
+std::vector<HpSample> g_hp; size_t g_hpPos = 0; std::mutex g_hpMutex; double g_hpThreshold = 0;
+double HpNow() { static LARGE_INTEGER f = [] { LARGE_INTEGER x; QueryPerformanceFrequency(&x); return x; }(); LARGE_INTEGER c; QueryPerformanceCounter(&c); return double(c.QuadPart) * 1000.0 / double(f.QuadPart); }
+}
+void HitchProfNotify(double startMs, double endMs, uint64_t frame)
+{
+    if (g_hpThreshold <= 0 || endMs - startMs < g_hpThreshold) return;
+    static int dumps = 0; if (dumps >= 25) return; dumps++;
+    std::lock_guard lock(g_hpMutex);
+    LOG("[prof] ---- tiron frame %llu (%.0f ms) ----", (unsigned long long)frame, endMs - startMs);
+    for (auto& s : g_hp)
+    {
+        if (s.t < startMs || s.t > endMs || s.n == 0) continue;
+        static unsigned wskip = 0; if (s.wait && (wskip++ % 8) != 0) continue;   // las esperas, 1 de cada 8
+        char line[400]; int n = snprintf(line, sizeof(line), "[prof] T%lu:%08X%s", s.tid, s.entry, s.wait ? "W" : "");
+        for (int f = 0; f < s.n; f++) n += snprintf(line + n, sizeof(line) - n, " %llX", (unsigned long long)s.pc[f]);
+        LOG("%s", line);
+    }
+}
+static void StartHitchProf()
+{
+    const char* e = getenv("NG2_HITCHPROF"); if (!e) return;
+    g_hpThreshold = atof(e); g_hp.resize(1 << 18);
+    std::thread([] {
+        auto range = [](HMODULE m, uintptr_t& lo, uintptr_t& hi) {
+            lo = hi = 0; if (!m) return;
+            auto* dos = (IMAGE_DOS_HEADER*)m; auto* nt = (IMAGE_NT_HEADERS*)((uint8_t*)m + dos->e_lfanew);
+            lo = (uintptr_t)m; hi = lo + nt->OptionalHeader.SizeOfImage; };
+        uintptr_t exLo, exHi, ntLo, ntHi, wuLo, wuHi;
+        range(GetModuleHandleW(nullptr), exLo, exHi); range(GetModuleHandleW(L"ntdll.dll"), ntLo, ntHi); range(GetModuleHandleW(L"win32u.dll"), wuLo, wuHi);
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+        timeBeginPeriod(1);
+        std::vector<ThreadInfo> targets; double lastList = 0;
+        for (;;)
+        {
+            double t0 = HpNow();
+            if (t0 - lastList > 1000) { std::lock_guard lock(g_mutex); targets = g_threads; lastList = t0; }
+            for (auto& cp : targets)
+            {
+                if (SuspendThread(cp.h) == (DWORD)-1) continue;
+                HpSample smp{}; smp.t = HpNow(); smp.tid = cp.tid; smp.entry = cp.entry;
+                CONTEXT c{}; c.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
+                bool waiting = false;
+                if (GetThreadContext(cp.h, &c))
+                {
+                    waiting = (c.Rip >= ntLo && c.Rip < ntHi) || (c.Rip >= wuLo && c.Rip < wuHi);
+                    for (int f = 0; f < 16 && c.Rip && smp.n < 10; f++)
+                    {
+                        if (c.Rip >= exLo && c.Rip < exHi) smp.pc[smp.n++] = c.Rip - exLo + 0x140000000ull;
+                        DWORD64 imageBase; auto* fe = RtlLookupFunctionEntry(c.Rip, &imageBase, nullptr);
+                        if (!fe) { c.Rip = *(DWORD64*)c.Rsp; c.Rsp += 8; continue; }
+                        void* hd; DWORD64 est; RtlVirtualUnwind(UNW_FLAG_NHANDLER, imageBase, c.Rip, fe, &c, &hd, &est, nullptr);
+                    }
+                }
+                ResumeThread(cp.h);
+                smp.wait = waiting;
+                std::lock_guard lock(g_hpMutex); g_hp[g_hpPos++ & (g_hp.size() - 1)] = smp;
+            }
+            double el = HpNow() - t0; if (el < 2) Sleep(1);
+        }
+    }).detach();
+}
+
 void StartDiagnostics()
 {
+    StartHitchProf();
     StartPatWatch();
     if (const char* ww = getenv("NG2_WRITEWATCH"))
     {

@@ -1,4 +1,5 @@
-﻿// Backend D3D12 (sesiones 7-8): dispositivo, swapchain, render target "EDRAM", draws traducidos y presentacion.
+﻿#include <unordered_set>
+// Backend D3D12 (sesiones 7-8): dispositivo, swapchain, render target "EDRAM", draws traducidos y presentacion.
 // Todo se usa desde un unico hilo (el del procesador de comandos).
 #include "gpu.h"
 #include "gpu_draw.h"
@@ -555,17 +556,83 @@ bool ApplyShaderOverrides(uint32_t type, uint64_t hash, std::string& hlsl)
     return changed;
 }
 
+
+// Sesion 25: precreacion de PSO. Cada PSO nuevo se apunta en shadercache/psolist.bin (descripcion + huella de los shaders); en el
+// siguiente arranque, tras precompilar los shaders, se crean todos en segundo plano y el draw los toma ya hechos (en los cortes de
+// escena el juego pedia ~60 PSO nuevos de golpe: ~50 ms de tiron). Solo se usa uno si los shaders compilados coinciden byte a byte
+// (huella FNV del bytecode). NG2_NOPSOPREWARM=1 lo desactiva.
+struct PsoRec
+{
+    uint32_t magic = 0x50534F31; uint32_t rect = 0; uint64_t key = 0, vsHash = 0, psHash = 0, vsBc = 0, psBc = 0;
+    D3D12_BLEND_DESC blend{}; D3D12_RASTERIZER_DESC rast{}; D3D12_DEPTH_STENCIL_DESC ds{}; DXGI_FORMAT dsv{}; D3D12_PRIMITIVE_TOPOLOGY_TYPE topo{};
+    UINT numRt = 0; DXGI_FORMAT rtv[2]{}; UINT sampleMask = 0;
+};
+static uint64_t BcHash(const void* p, size_t n) { uint64_t h = 1469598103934665603ull; for (size_t i = 0; i < n; i++) h = (h ^ ((const uint8_t*)p)[i]) * 1099511628211ull; return h; }
+static std::mutex g_psoPreMutex; static std::unordered_map<uint64_t, ComPtr<ID3D12PipelineState>> g_psoPre; static std::unordered_set<uint64_t> g_psoListed;
+static std::atomic<bool> g_psoListLoaded{ false };
+static void RecordPso(uint64_t key, const D3D12_GRAPHICS_PIPELINE_STATE_DESC& pd, uint64_t vsHash, uint64_t psHash, bool rect)
+{
+    static const bool off = getenv("NG2_NOPSOPREWARM") != nullptr || getenv("NG2_NOSHADERCACHE") != nullptr;
+    if (off || !g_psoListLoaded) return;
+    { std::lock_guard lk(g_psoPreMutex); if (!g_psoListed.insert(key).second) return; }
+    PsoRec r; r.rect = rect; r.key = key; r.vsHash = vsHash; r.psHash = psHash;
+    r.vsBc = BcHash(pd.VS.pShaderBytecode, pd.VS.BytecodeLength); r.psBc = BcHash(pd.PS.pShaderBytecode, pd.PS.BytecodeLength);
+    r.blend = pd.BlendState; r.rast = pd.RasterizerState; r.ds = pd.DepthStencilState; r.dsv = pd.DSVFormat; r.topo = pd.PrimitiveTopologyType;
+    r.numRt = pd.NumRenderTargets; r.rtv[0] = pd.RTVFormats[0]; r.rtv[1] = pd.RTVFormats[1]; r.sampleMask = pd.SampleMask;
+    CreateDirectoryA("shadercache", nullptr);
+    if (FILE* f = fopen("shadercache/psolist.bin", "ab")) { fwrite(&r, sizeof(r), 1, f); fclose(f); }
+}
+static bool TakePrewarmedPso(uint64_t key, ComPtr<ID3D12PipelineState>& out)
+{
+    std::lock_guard lk(g_psoPreMutex);
+    auto it = g_psoPre.find(key); if (it == g_psoPre.end()) return false;
+    out = std::move(it->second); g_psoPre.erase(it); return true;
+}
+static void PrewarmPsos(const std::unordered_map<uint64_t, ComPtr<ID3DBlob>>& blobs)
+{
+    std::vector<PsoRec> recs;
+    if (FILE* f = fopen("shadercache/psolist.bin", "rb")) { PsoRec r; while (fread(&r, sizeof(r), 1, f) == 1) if (r.magic == 0x50534F31) recs.push_back(r); fclose(f); }
+    { std::lock_guard lk(g_psoPreMutex); for (auto& r : recs) g_psoListed.insert(r.key); }
+    g_psoListLoaded = true;
+    if (recs.empty()) return;
+    double t0 = QpcMs(); std::atomic<size_t> next{ 0 }; std::atomic<uint32_t> ok{ 0 }, miss{ 0 };
+    auto worker = [&]() {
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+        for (;;)
+        {
+            size_t i = next++; if (i >= recs.size()) break;
+            const PsoRec& r = recs[i];
+            auto v = blobs.find(r.vsHash), p = blobs.find(r.psHash);
+            if (v == blobs.end() || p == blobs.end() || BcHash(v->second->GetBufferPointer(), v->second->GetBufferSize()) != r.vsBc
+                || BcHash(p->second->GetBufferPointer(), p->second->GetBufferSize()) != r.psBc) { miss++; continue; }
+            D3D12_GRAPHICS_PIPELINE_STATE_DESC pd{};
+            pd.pRootSignature = g_drawRootSig.Get();
+            pd.VS = { v->second->GetBufferPointer(), v->second->GetBufferSize() }; pd.PS = { p->second->GetBufferPointer(), p->second->GetBufferSize() };
+            if (r.rect) pd.GS = { g_rectGs->GetBufferPointer(), g_rectGs->GetBufferSize() };
+            pd.BlendState = r.blend; pd.RasterizerState = r.rast; pd.DepthStencilState = r.ds; pd.DSVFormat = r.dsv; pd.PrimitiveTopologyType = r.topo;
+            pd.IBStripCutValue = D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_0xFFFFFFFF; pd.SampleMask = r.sampleMask; pd.SampleDesc.Count = 1;
+            pd.NumRenderTargets = r.numRt; pd.RTVFormats[0] = r.rtv[0]; pd.RTVFormats[1] = r.rtv[1];
+            ComPtr<ID3D12PipelineState> pso;
+            if (SUCCEEDED(g_dev->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&pso)))) { std::lock_guard lk(g_psoPreMutex); g_psoPre[r.key] = pso; ok++; }
+        }
+    };
+    unsigned hw = std::thread::hardware_concurrency(); unsigned n = hw > 3 ? std::min(hw - 2, 6u) : 1u;
+    std::vector<std::thread> pool; for (unsigned k = 0; k < n; k++) pool.emplace_back(worker); for (auto& th : pool) th.join();
+    LOG("[d3d12] PSO precreados: %u de %zu en %.1f s (%u sin shaders iguales)", ok.load(), recs.size(), (QpcMs() - t0) / 1000.0, miss.load());
+}
+
 void PrewarmShaders()
 {
-    if (getenv("NG2_NOPREWARM") || getenv("NG2_NOSHADERCACHE")) return;
+    if (getenv("NG2_NOPREWARM") || getenv("NG2_NOSHADERCACHE")) { g_psoListLoaded = getenv("NG2_NOSHADERCACHE") == nullptr; return; }
     std::vector<std::string> files;
     WIN32_FIND_DATAA fd; HANDLE fh = FindFirstFileA("shaders/*.bin", &fd);
-    if (fh == INVALID_HANDLE_VALUE) return;
+    if (fh == INVALID_HANDLE_VALUE) { g_psoListLoaded = true; return; }
     do { if ((fd.cFileName[0] == 'v' || fd.cFileName[0] == 'p') && fd.cFileName[1] == 's') files.push_back(fd.cFileName); } while (FindNextFileA(fh, &fd));
     FindClose(fh);
-    if (files.empty()) return;
+    if (files.empty()) { g_psoListLoaded = true; return; }
     std::thread([files]() {
         double t0 = QpcMs();
+        std::mutex blobMutex; std::unordered_map<uint64_t, ComPtr<ID3DBlob>> blobs;
         unsigned hw = std::thread::hardware_concurrency();
         unsigned n = hw > 3 ? std::min(hw - 2, 8u) : 1u;
         std::atomic<size_t> next{ 0 }; std::atomic<uint32_t> ok{ 0 };
@@ -598,13 +665,15 @@ void PrewarmShaders()
                     { std::lock_guard<std::mutex> lk(g_xlatMutex); g_xlatNoGrad = true; t = TranslateXenosShader(type, w.data(), (uint32_t)w.size()); g_xlatNoGrad = false; }
                     if (t.ok) { ApplyShaderOverrides(type, hash, t.hlsl); blob = Compile(t.hlsl, "main", "ps_5_0", name.c_str()); }
                 }
-                if (blob) ok++;
+                if (blob) { ok++; std::lock_guard lk(blobMutex); blobs[hash] = blob; }
             }
         };
         std::vector<std::thread> pool;
         for (unsigned k = 0; k < n; k++) pool.emplace_back(worker);
         for (auto& th : pool) th.join();
         LOG("[d3d12] precompilacion: %u/%zu shaders listos en %.1f s (%u hilos)", ok.load(), files.size(), (QpcMs() - t0) / 1000.0, n);
+        if (getenv("NG2_NOPSOPREWARM")) { g_psoListLoaded = true; return; }
+        PrewarmPsos(blobs);
     }).detach();
 }
 
@@ -3310,7 +3379,9 @@ static void D3D12DrawImpl(const XenosDraw& d)
         pd.IBStripCutValue = D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_0xFFFFFFFF;   // indices de reinicio = 0xFFFFFFFF
         pd.NumRenderTargets = rt1 ? 2 : 1; pd.RTVFormats[0] = curRt->fmt; pd.SampleDesc.Count = 1;
         if (rt1) pd.RTVFormats[1] = rt1->fmt;
-        double tPso = QpcMs(); HRESULT hrPso = CreatePsoCached(key, pd, pso); g_hPsoMs += QpcMs() - tPso; g_hPsos++;
+        double tPso = QpcMs(); HRESULT hrPso = S_OK;
+        if (!TakePrewarmedPso(key, pso)) { hrPso = CreatePsoCached(key, pd, pso); g_hPsos++; if (SUCCEEDED(hrPso)) RecordPso(key, pd, d.vsHash, d.psHash, rect); }
+        g_hPsoMs += QpcMs() - tPso;
         if (FAILED(hrPso)) { static int psoFailLog = 0; if (psoFailLog++ < 12) LOG("[d3d12] PSO fallido hr=%08X (prim %u, formato RT %d, rt1 %d) VS %016llX PS %016llX bc=%08X dc=%08X mask=%X", (unsigned)hrPso, d.primType, (int)curRt->fmt, rt1 ? (int)rt1->fmt : -1, (unsigned long long)d.vsHash, (unsigned long long)d.psHash, bc, useDepth ? dc : 0, colorMask); g_skipped[2]++; return; }
     }
 
@@ -3887,6 +3958,7 @@ bool D3D12PresentResolved(HWND hwnd, uint32_t fb, std::vector<uint32_t>* readbac
             if (flFrom >= 0 && (long long)hn >= flFrom && (long long)hn < flFrom + flCount)
                 LOG("[framelog] %llu: %.1f ms, draws %llu (%.1f ms), present %.1f ms, espera GPU %.1f ms", (unsigned long long)hn, dt, (unsigned long long)g_frameDraws, g_hDrawMs, g_hPresentMs, g_hWaitMs);
         }
+        { extern void HitchProfNotify(double, double, uint64_t); if (dt > 0) HitchProfNotify(now - dt, now, hn); }
         if (dt > hitchMs && hitches++ < 2000)
             LOG("[tiron] frame %llu: %.0f ms | compilar %.0f ms (%u nuevos, %u de cache) | PSO %.0f ms (%u) | texturas %.0f ms (crear %.0f ms x%u, subir %.0f ms x%u) | espera GPU %.0f ms | vaciados %.0f ms (%u)",
                 (unsigned long long)hn, dt, g_hCompileMs, g_hCompiles, g_hCacheHits, g_hPsoMs, g_hPsos, g_hTexMs, g_hTexCreateMs, g_hTexNew, g_hTexFillMs, g_hTexUp, g_hWaitMs, g_hFlushMs, g_hFlushes);
