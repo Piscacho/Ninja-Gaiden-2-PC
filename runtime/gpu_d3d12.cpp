@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cmath>
 #include <mutex>
+#include <condition_variable>
 #include <thread>
 #include <atomic>
 #include <functional>
@@ -251,13 +252,50 @@ bool Check(HRESULT hr, const char* what)
     return false;
 }
 
+// Sesion 23: grupo fijo de hilos para trabajo de CPU repartible (destileado de texturas). ParallelFor(n, f) ejecuta f(0..n-1):
+// f(0) en el hilo que llama y el resto en los trabajadores; vuelve cuando terminan todos. Una sola llamada a la vez.
+static void ParallelFor(unsigned n, const std::function<void(unsigned)>& f)
+{
+    struct Pool
+    {
+        std::mutex m; std::condition_variable cv, done; const std::function<void(unsigned)>* job = nullptr;
+        unsigned count = 0, pending = 0; uint64_t gen = 0; std::vector<std::thread> th;
+        explicit Pool(unsigned w)
+        {
+            for (unsigned i = 0; i < w; i++)
+                th.emplace_back([this, i] {
+                    uint64_t seen = 0;
+                    for (;;)
+                    {
+                        std::unique_lock<std::mutex> l(m);
+                        cv.wait(l, [&] { return gen != seen; });
+                        seen = gen;
+                        if (i + 1 >= count) continue;   // este trabajador no participa en esta ronda
+                        auto* j = job; l.unlock();
+                        (*j)(i + 1);
+                        l.lock(); if (--pending == 0) done.notify_one();
+                    }
+                });
+        }
+    };
+    static Pool pool(7);
+    static std::mutex callLock;
+    if (n <= 1) { f(0); return; }
+    n = std::min(n, 8u);
+    std::lock_guard<std::mutex> cl(callLock);
+    { std::lock_guard<std::mutex> l(pool.m); pool.job = &f; pool.count = n; pool.pending = n - 1; pool.gen++; }
+    pool.cv.notify_all();
+    f(0);
+    std::unique_lock<std::mutex> l(pool.m);
+    pool.done.wait(l, [&] { return pool.pending == 0; });
+}
 // Sesion 24: medicion de tirones (NG2_HITCHMS=<ms>, por defecto 40) y cache de shaders compilados en disco
 double QpcMs()
 {
     static LARGE_INTEGER f = [] { LARGE_INTEGER x; QueryPerformanceFrequency(&x); return x; }();
     LARGE_INTEGER c; QueryPerformanceCounter(&c); return double(c.QuadPart) * 1000.0 / double(f.QuadPart);
 }
-double g_hCompileMs = 0, g_hPsoMs = 0, g_hTexMs = 0, g_hWaitMs = 0;
+double g_hCompileMs = 0, g_hPsoMs = 0, g_hTexMs = 0, g_hWaitMs = 0, g_hTexCreateMs = 0, g_hTexFillMs = 0; uint32_t g_hTexNew = 0, g_hTexUp = 0;
 uint32_t g_hCompiles = 0, g_hCacheHits = 0, g_hPsos = 0, g_hFlushes = 0;
 double g_hFlushMs = 0, g_hDrawMs = 0, g_hPresentMs = 0;
 thread_local bool t_prewarm = false;   // hilos de precompilacion: no cuentan en la medicion de tirones
@@ -891,6 +929,34 @@ ShaderEntry& GetShader(uint32_t type, const uint32_t* code, uint32_t count, uint
 uint64_t g_skipped[16] = {};
 
 // ---- texturas (sesion 8): solo mip base, formatos 8888 y DXT1/3/5 ----
+// Sesion 23 (rendimiento): las texturas se crean como recursos colocados en montones de 64 MB (asignacion secuencial; la cache de
+// texturas nunca libera). CreateCommittedResource costaba ~0,2 ms por textura: 535 texturas nuevas en un corte = 116 ms de tiron.
+// Las de mas de 16 MB, o si algo falla, siguen siendo committed. NG2_TEXCOMMITTED=1 = como antes.
+static HRESULT CreateTextureResource(const D3D12_RESOURCE_DESC& td, ComPtr<ID3D12Resource>& out)
+{
+    static const bool committed = getenv("NG2_TEXCOMMITTED") != nullptr;
+    D3D12_HEAP_PROPERTIES def{ D3D12_HEAP_TYPE_DEFAULT };
+    if (!committed)
+    {
+        static std::vector<ComPtr<ID3D12Heap>> heaps; static UINT64 used = 0; const UINT64 kHeap = 64ull << 20;
+        D3D12_RESOURCE_ALLOCATION_INFO ai = g_dev->GetResourceAllocationInfo(0, 1, &td);
+        if (ai.SizeInBytes != UINT64_MAX && ai.SizeInBytes <= (16ull << 20))
+        {
+            UINT64 al = ai.Alignment ? ai.Alignment : 65536, off = (used + al - 1) & ~(al - 1);
+            if (heaps.empty() || off + ai.SizeInBytes > kHeap)
+            {
+                D3D12_HEAP_DESC hd{}; hd.SizeInBytes = kHeap; hd.Properties = def; hd.Alignment = D3D12_DEFAULT_MSAA_RESOURCE_PLACEMENT_ALIGNMENT;
+                hd.Flags = D3D12_HEAP_FLAG_ALLOW_ONLY_NON_RT_DS_TEXTURES;
+                ComPtr<ID3D12Heap> h;
+                if (SUCCEEDED(g_dev->CreateHeap(&hd, IID_PPV_ARGS(&h)))) { heaps.push_back(h); used = 0; off = 0; }
+                else return g_dev->CreateCommittedResource(&def, D3D12_HEAP_FLAG_NONE, &td, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&out));
+            }
+            HRESULT hr = g_dev->CreatePlacedResource(heaps.back().Get(), off, &td, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&out));
+            if (SUCCEEDED(hr)) { used = off + ai.SizeInBytes; return hr; }
+        }
+    }
+    return g_dev->CreateCommittedResource(&def, D3D12_HEAP_FLAG_NONE, &td, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&out));
+}
 struct TexEntry { ComPtr<ID3D12Resource> res; DXGI_FORMAT fmt; uint64_t dataHash = 0; uint64_t lastFrame = 0; uint64_t resolveGen = 0; uint32_t levels = 1; };
 // Sesion 24: generacion de resolves por CPU por direccion de destino. Una textura se vuelve a subir si hubo un resolve nuevo a su
 // direccion desde su ultima subida, aunque el hash de muestras coincida (texturas casi uniformes como la SSAO).
@@ -1308,7 +1374,9 @@ bool BindTexture(uint32_t tf, D3D12_CPU_DESCRIPTOR_HANDLE slot)
             D3D12_HEAP_PROPERTIES def{ D3D12_HEAP_TYPE_DEFAULT };
             D3D12_RESOURCE_DESC td{}; td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; td.Width = bw * blockDim; td.Height = bh * blockDim;
             td.DepthOrArraySize = 1; td.MipLevels = (UINT16)levels; td.Format = df; td.SampleDesc.Count = 1;
-            if (FAILED(g_dev->CreateCommittedResource(&def, D3D12_HEAP_FLAG_NONE, &td, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&e.res)))) return false;
+            double tc0 = QpcMs();
+            if (FAILED(CreateTextureResource(td, e.res))) return false;
+            g_hTexCreateMs += QpcMs() - tc0; g_hTexNew++;
             e.fmt = df; e.levels = levels;
         }
         else { auto b = Transition(e.res.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST); ProbedBarrier(1, &b, __LINE__); }
@@ -1328,9 +1396,9 @@ bool BindTexture(uint32_t tf, D3D12_CPU_DESCRIPTOR_HANDLE slot)
             { if (lw > lh) pkY = 16 / blockDim; else pkX = 16 / blockDim; }
         }
         // Destilea un nivel: lsrc = inicio del nivel, lpitch = pitch en bloques (alineado a 32 si es tiled), (lox, loy) = desplazamiento
-        auto fillLevel = [&](const uint8_t* src, uint32_t bw, uint32_t bh, uint32_t lpitch, uint32_t pkX, uint32_t pkY, uint8_t* dst, UINT rowPitch)
+        auto fillRows = [&](const uint8_t* src, uint32_t bw, uint32_t by0, uint32_t by1, uint32_t lpitch, uint32_t pkX, uint32_t pkY, uint8_t* dst, UINT rowPitch)
         {
-        for (uint32_t by = 0; by < bh; by++)
+        for (uint32_t by = by0; by < by1; by++)
         {
             uint32_t outer = tiled ? TiledOuter(by + pkY, lpitch, log2b) : 0;
             for (uint32_t bx = 0; bx < bw; bx++)
@@ -1368,7 +1436,21 @@ bool BindTexture(uint32_t tf, D3D12_CPU_DESCRIPTOR_HANDLE slot)
             }
         }
         };
+        // Sesion 23 (rendimiento): las texturas grandes se destilean por franjas de filas en varios hilos (los cortes de escena
+        // subian decenas de texturas de golpe en el hilo de la GPU: tirones de 200-350 ms). NG2_TEXST=1 = un solo hilo.
+        auto fillLevel = [&](const uint8_t* src, uint32_t bw, uint32_t bh, uint32_t lpitch, uint32_t pkX, uint32_t pkY, uint8_t* dst, UINT rowPitch)
+        {
+            static const bool st = getenv("NG2_TEXST") != nullptr;
+            static const unsigned nthr = std::max(1u, std::min(8u, std::thread::hardware_concurrency() / 2));
+            if (st || nthr < 2 || uint64_t(bw) * bh < 32768 || bh < 32) { fillRows(src, bw, 0, bh, lpitch, pkX, pkY, dst, rowPitch); return; }
+            ParallelFor(nthr, [&](unsigned t) {
+                uint32_t a = uint32_t(uint64_t(bh) * t / nthr), b = uint32_t(uint64_t(bh) * (t + 1) / nthr);
+                fillRows(src, bw, a, b, lpitch, pkX, pkY, dst, rowPitch);
+            });
+        };
+        double tf0 = QpcMs(); g_hTexUp++;
         fillLevel(src, bw, bh, tiled ? ((pitchBlocks + 31) & ~31u) : pitchBlocks, pkX, pkY, dst, rowPitch);
+        struct FillTimer { double t; ~FillTimer() { g_hTexFillMs += QpcMs() - t; } } fillTimer{ tf0 };
         // NG2_TEXDUMP=<base hex>: guarda los datos ya destileados de esa textura (formato sin bloques) en texdump_*.raw (sesion 24)
         if (static const char* td = getenv("NG2_TEXDUMP"); td && (base & 0xFFFFF000) == ((uint32_t)strtoul(td, nullptr, 16) & 0xFFFFF000))
         {
@@ -1501,7 +1583,7 @@ bool BindTexture3D(uint32_t tf, D3D12_CPU_DESCRIPTOR_HANDLE slot)
             D3D12_HEAP_PROPERTIES def{ D3D12_HEAP_TYPE_DEFAULT };
             D3D12_RESOURCE_DESC td{}; td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE3D; td.Width = w; td.Height = h; td.DepthOrArraySize = (UINT16)dpt;
             td.MipLevels = 1; td.Format = df; td.SampleDesc.Count = 1;
-            if (FAILED(g_dev->CreateCommittedResource(&def, D3D12_HEAP_FLAG_NONE, &td, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&e.res)))) return false;
+            if (FAILED(CreateTextureResource(td, e.res))) return false;
             e.fmt = df;
             LOG("[d3d12] textura 3D %ux%ux%u formato %u %s en %08X", w, h, dpt, fmt, tiled ? "tiled" : "lineal", base);
         }
@@ -1600,7 +1682,7 @@ bool BindTextureCube(uint32_t tf, D3D12_CPU_DESCRIPTOR_HANDLE slot)
             D3D12_HEAP_PROPERTIES def{ D3D12_HEAP_TYPE_DEFAULT };
             D3D12_RESOURCE_DESC td{}; td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; td.Width = bw * blockDim; td.Height = bh * blockDim; td.DepthOrArraySize = 6;
             td.MipLevels = 1; td.Format = df; td.SampleDesc.Count = 1;
-            if (FAILED(g_dev->CreateCommittedResource(&def, D3D12_HEAP_FLAG_NONE, &td, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&e.res)))) return false;
+            if (FAILED(CreateTextureResource(td, e.res))) return false;
             e.fmt = df;
             LOG("[d3d12] textura cubo %ux%u formato %u %s en %08X", w, h, fmt, tiled ? "tiled" : "lineal", base);
         }
@@ -3672,9 +3754,9 @@ bool D3D12PresentResolved(HWND hwnd, uint32_t fb, std::vector<uint32_t>* readbac
                 LOG("[framelog] %llu: %.1f ms, draws %llu (%.1f ms), present %.1f ms, espera GPU %.1f ms", (unsigned long long)hn, dt, (unsigned long long)g_frameDraws, g_hDrawMs, g_hPresentMs, g_hWaitMs);
         }
         if (dt > hitchMs && hitches++ < 2000)
-            LOG("[tiron] frame %llu: %.0f ms | compilar %.0f ms (%u nuevos, %u de cache) | PSO %.0f ms (%u) | texturas %.0f ms | espera GPU %.0f ms | vaciados %.0f ms (%u)",
-                (unsigned long long)hn, dt, g_hCompileMs, g_hCompiles, g_hCacheHits, g_hPsoMs, g_hPsos, g_hTexMs, g_hWaitMs, g_hFlushMs, g_hFlushes);
-        g_hCompileMs = g_hPsoMs = g_hTexMs = g_hWaitMs = g_hFlushMs = g_hDrawMs = g_hPresentMs = 0; g_hCompiles = g_hCacheHits = g_hPsos = g_hFlushes = 0;
+            LOG("[tiron] frame %llu: %.0f ms | compilar %.0f ms (%u nuevos, %u de cache) | PSO %.0f ms (%u) | texturas %.0f ms (crear %.0f ms x%u, subir %.0f ms x%u) | espera GPU %.0f ms | vaciados %.0f ms (%u)",
+                (unsigned long long)hn, dt, g_hCompileMs, g_hCompiles, g_hCacheHits, g_hPsoMs, g_hPsos, g_hTexMs, g_hTexCreateMs, g_hTexNew, g_hTexFillMs, g_hTexUp, g_hWaitMs, g_hFlushMs, g_hFlushes);
+        g_hCompileMs = g_hPsoMs = g_hTexMs = g_hWaitMs = g_hFlushMs = g_hDrawMs = g_hPresentMs = g_hTexCreateMs = g_hTexFillMs = 0; g_hTexNew = g_hTexUp = 0; g_hCompiles = g_hCacheHits = g_hPsos = g_hFlushes = 0;
     }
     static uint64_t n = 0;
     if (++n % 120 == 0)
