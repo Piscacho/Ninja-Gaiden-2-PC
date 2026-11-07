@@ -3,6 +3,7 @@
 // Soportado: exec/exec_end/cexec (bool)/cexec_pred, ALU vectorial+escalar emparejadas, vfetch (formatos float/8888/16),
 // tfetch 2D. No soportado aun: bucles, llamadas, saltos (el shader se marca como no valido y el draw se omite).
 #include "gpu_shader.h"
+#include <atomic>
 #include <cstdio>
 #include <cstdarg>
 #include <algorithm>
@@ -278,6 +279,11 @@ void EmitAlu(Gen& g, const uint32_t* w, bool isPs)
     if (exportData)
     {
         bool valid; std::string t = ExportTarget(vdst, isPs, valid);
+        if (!valid)
+        {   // sesion 23 (diagnostico): exportaciones descartadas (32 = eA y 33-37 = eM0-4 son memexport)
+            static std::atomic<int> nlog{ 0 };
+            if (nlog.fetch_add(1) < 40) LOG("[shader] exportacion descartada: registro %u en un %s%s", vdst, isPs ? "PS" : "VS", (vdst >= 32 && vdst <= 37) ? " (memexport)" : "");
+        }
         for (int i = 0; i < 4; i++)
         {
             bool vm = vmask & (1 << i), sm = smask & (1 << i);
