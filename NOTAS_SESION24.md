@@ -55,3 +55,13 @@ Siguiente (con Xenia y sin otra ventana delante):
 
 Diagnósticos nuevos: `NG2_EFFLOG=1` (ganchos en `sub_8365D730`, `sub_822FF5A8`, `sub_823D6F00` y estado del búfer cada minuto),
 `tools/xref.py` (código que construye una dirección con `lis`+`addi`).
+
+## Tercera parte
+
+- Los pétalos de cerezo son partículas del mismo tipo (VS D2AE0887 + PS BDBE927E, tiras con búferes que la CPU rellena cada
+  frame) y sí se dibujan, también en combate: **el renderizador de partículas funciona; fallan los efectos que disparan los
+  golpes y las muertes** (sangre, almas, destellos).
+- Hipótesis principal: esos efectos se buscan por un identificador calculado (p. ej. un hash del nombre guardado en
+  `ng2_hit_data.dat`) que no coincide con el que calculamos, mientras que los del escenario se piden por índice. Siguiente: localizar
+  la búsqueda de efectos por golpe (llamadas desde el código de daño/muerte) y comprobar si encuentra el efecto.
+- La estructura 0x83BBC090 es un gestor global de recursos (409 referencias): no sirve para llegar rápido al disparador.
