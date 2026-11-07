@@ -36,3 +36,7 @@ __pycache__/
 # imagenes del launcher (SteamGridDB, de terceros)
 dist_files/portada.png
 dist_files/logo.png
+
+# actualizacion del titulo (datos del juego del usuario)
+tu/
+tools/lzxdelta.exe
