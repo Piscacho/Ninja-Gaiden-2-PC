@@ -62,3 +62,43 @@ Fecha: 2026-11-07. El usuario pidió seguir 5 horas con los efectos que faltan (
 - El XEX base sí conoce los nombres de los combates (`battle\s_missionNN_*.btl`), `mission.tdp` y los marcadores «MISSION
   01-25», pero no el menú ni `cmn\mes_mission.bin`. Para jugarlo haría falta la actualización oficial (su `default.xex`),
   sacada de la consola del usuario, y recompilarla.
+
+## Tercera parte: audio, contador, launcher y panorámico
+
+### El audio se cortaba (arreglado)
+
+- Síntoma: a los 1-8 minutos de partida se dejaba de oír todo (música, voces y efectos); el juego seguía a 60 fps. En el registro
+  dejan de salir las líneas `[wasapi] t=` y `[xma]` se queda fijo.
+- Causa: la barrera de los dos hilos de XAudio del juego (`sub_8374F078`, hilos 8374E740/8374E808 en las CPU 4 y 5). Cada hilo pone
+  a 1 el byte de su CPU (KPCR+0x10C) en una palabra de 64 bits y espera a que estén todos los de la máscara; el que la ve completa
+  la pone a 0. Si ese hilo vuelve a entrar en la ronda siguiente antes de que el otro vea el 0 (en el PC, con el otro hilo
+  desplanificado unos ms), los dos esperan para siempre y la función de render de audio (`sub_8374EDE8`, en nuestro `AudioPump`)
+  se queda en `KeWaitForMultipleObjects` sin volver.
+- Arreglo (`hooks_ng2.cpp`): barrera con contador de generación en el host; la palabra del juego se sigue actualizando.
+  Dos partidas de 8 min con sonido hasta el final (antes 10-95 líneas de `[wasapi]` según la suerte). `NG2_OLDAUDIOBARRIER=1` = antes.
+
+### Contador en pantalla (F3)
+
+- Como el de Guitar Hero con más datos: FPS, ms por frame (media, máximo y 1% más lento), CPU del proceso, draws por frame,
+  tirones (>40 ms), VRAM usada/presupuesto, RAM, resolución interna → ventana y cola de audio. `mostrar_fps=1` / `NG2_FPS=1`.
+
+### Launcher
+
+- `runtime/launcher_ui.cpp`, adaptado del de Guitar Hero (mismo aspecto, colores de Ninja Gaiden). Páginas Inicio, Juego,
+  Gráficos, Controles, Audio y Ayuda. `portada.png` y `logo.png` junto al exe (de SteamGridDB: hero 2b763a9f… y logo cffa2aed…;
+  no se guardan en git). `--jugar` lo salta, `--launcher` o Mayús lo fuerzan; `mostrar_launcher=0` en ng2.ini.
+- ng2.ini nuevo: `saltar_intro`, `grano_pelicula`, `desenfoque_movimiento`, `vsync`, `escalado`, `latencia_audio`
+  (baja/normal/segura = 25/40/80 ms), `pantalla_completa`, `ventana=WxH`, `panoramico`, `mostrar_launcher`. `SaveConfig` ya no
+  borra el resto del ini.
+
+### Panorámico (21:9 y 32:9)
+
+- El juego elige la proporción de la cámara entre 16/9 (0x8228925C) y 4/3 (0x822817DC). El frustum (`sub_837CC920`) usa
+  tanX = tan(campo × proporción / 2) y tanY = tanX / proporción: con proporciones mayores el ángulo horizontal crece en lineal
+  (a 32:9 casi 180°). Cambiar esa constante no da un Hor+ correcto y solo afecta a algunas cámaras.
+- Solución: la cámara del juego se queda en 16:9 y el Hor+ se hace en el VS: en las superficies proporcionales a la pantalla
+  (pitch 1120/560/280/1280/640/320) los vértices en perspectiva se comprimen hacia el centro (x / kx, kx = proporción / (16/9),
+  en `XVte.w` del VS) y al presentar la imagen se estira a la proporción elegida. La interfaz 2D (superficie final 1280 en 8888,
+  w = 1) pasa por un GS que comprime hacia el centro los triángulos que no van de borde a borde.
+- Limitación: el juego sigue descartando objetos con su campo de 16:9, así que en los bordes puede faltar geometría; la imagen
+  interna sigue siendo de 1280x720 (se estira a lo ancho).

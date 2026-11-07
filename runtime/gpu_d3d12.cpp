@@ -9,6 +9,7 @@
 #include <dxgi1_4.h>
 #include <d3dcompiler.h>
 #include <psapi.h>
+float PanoAspect(); void ApplyPanoCamera();   // panoramico (sesion 25)
 #pragma comment(lib, "psapi.lib")
 #pragma comment(lib, "dxgi.lib")
 #include <wrl/client.h>
@@ -76,7 +77,7 @@ uint64_t g_frameDraws = 0;
 uint64_t g_curPsHash = 0;   // PS del draw en curso (diagnostico)
 UINT g_descCursor = 0;
 uint64_t g_frameCounter = 0;
-ComPtr<ID3DBlob> g_rectGs;
+ComPtr<ID3DBlob> g_rectGs, g_uiGs, g_rectGsPano;   // sesion 25: GS del panoramico
 // ---- EDRAM (sesion 9): un RT por (base, pitch) ----
 // Sesion 21: cada superficie tiene el formato de RB_COLOR_INFO (bits 16-19), no siempre BGRA8
 struct EdramRt
@@ -285,6 +286,44 @@ void main(triangle XVSOut v[3], inout TriangleStream<XVSOut> s)
     d.pos = v[a].pos + v[b].pos - v[c].pos;
     [unroll] for (int i = 0; i < 16; i++) d.t[i] = v[a].t[i] + v[b].t[i] - v[c].t[i];
     s.Append(v[c]); s.Append(v[a]); s.Append(v[b]); s.Append(d);
+}
+)";
+
+
+// Sesion 25 (panoramico): la interfaz 2D se dibuja en la superficie final de 1280 x 720 y luego se estira a 21:9 / 32:9. Para que no
+// se deforme, cada triangulo en coordenadas de pantalla (w = 1) que no va de borde a borde se comprime hacia el centro (x / KX);
+// los de borde a borde (la escena compuesta, fondos, fundidos) se quedan igual. KX = proporcion / (16/9), se define al compilar.
+const char* kPanoUiFnHlsl = R"(
+bool XPanoUi(float4 a, float4 b, float4 c)
+{
+    bool flat = abs(a.w - 1.0) < 1e-4 && abs(b.w - 1.0) < 1e-4 && abs(c.w - 1.0) < 1e-4;
+    float mn = min(a.x, min(b.x, c.x)), mx = max(a.x, max(b.x, c.x));
+    return flat && (mx - mn) < 1.95;
+}
+)";
+const char* kUiGsHlsl = R"(
+[maxvertexcount(3)]
+void main(triangle XVSOut v[3], inout TriangleStream<XVSOut> s)
+{
+    bool ui = XPanoUi(v[0].pos, v[1].pos, v[2].pos);
+    [unroll] for (int k = 0; k < 3; k++) { XVSOut o = v[k]; if (ui) o.pos.x /= KX; s.Append(o); }
+}
+)";
+const char* kRectGsPanoHlsl = R"(
+[maxvertexcount(4)]
+void main(triangle XVSOut v[3], inout TriangleStream<XVSOut> s)
+{
+    float2 p0 = v[0].pos.xy / v[0].pos.w, p1 = v[1].pos.xy / v[1].pos.w, p2 = v[2].pos.xy / v[2].pos.w;
+    float d01 = dot(p0 - p1, p0 - p1), d12 = dot(p1 - p2, p1 - p2), d02 = dot(p0 - p2, p0 - p2);
+    uint c = 0, a = 1, b = 2;
+    if (d02 > d12 && d02 >= d01) { c = 1; a = 0; b = 2; }
+    else if (d01 > d12 && d01 > d02) { c = 2; a = 0; b = 1; }
+    XVSOut d;
+    d.pos = v[a].pos + v[b].pos - v[c].pos;
+    [unroll] for (int i = 0; i < 16; i++) d.t[i] = v[a].t[i] + v[b].t[i] - v[c].t[i];
+    bool ui = XPanoUi(v[0].pos, v[1].pos, v[2].pos);
+    XVSOut q[4] = { v[c], v[a], v[b], d };
+    [unroll] for (int k = 0; k < 4; k++) { if (ui) q[k].pos.x /= KX; s.Append(q[k]); }
 }
 )";
 
@@ -575,7 +614,7 @@ struct PsoRec
 static uint64_t BcHash(const void* p, size_t n) { uint64_t h = 1469598103934665603ull; for (size_t i = 0; i < n; i++) h = (h ^ ((const uint8_t*)p)[i]) * 1099511628211ull; return h; }
 static std::mutex g_psoPreMutex; static std::unordered_map<uint64_t, ComPtr<ID3D12PipelineState>> g_psoPre; static std::unordered_set<uint64_t> g_psoListed;
 static std::atomic<bool> g_psoListLoaded{ false };
-static void RecordPso(uint64_t key, const D3D12_GRAPHICS_PIPELINE_STATE_DESC& pd, uint64_t vsHash, uint64_t psHash, bool rect)
+static void RecordPso(uint64_t key, const D3D12_GRAPHICS_PIPELINE_STATE_DESC& pd, uint64_t vsHash, uint64_t psHash, int rect)
 {
     static const bool off = getenv("NG2_NOPSOPREWARM") != nullptr || getenv("NG2_NOSHADERCACHE") != nullptr;
     if (off || !g_psoListLoaded) return;
@@ -613,7 +652,7 @@ static void PrewarmPsos(const std::unordered_map<uint64_t, ComPtr<ID3DBlob>>& bl
             D3D12_GRAPHICS_PIPELINE_STATE_DESC pd{};
             pd.pRootSignature = g_drawRootSig.Get();
             pd.VS = { v->second->GetBufferPointer(), v->second->GetBufferSize() }; pd.PS = { p->second->GetBufferPointer(), p->second->GetBufferSize() };
-            if (r.rect) pd.GS = { g_rectGs->GetBufferPointer(), g_rectGs->GetBufferSize() };
+            if (r.rect) { ID3DBlob* gb = r.rect == 1 ? g_rectGs.Get() : r.rect == 2 ? g_uiGs.Get() : g_rectGsPano.Get(); if (!gb) { miss++; continue; } pd.GS = { gb->GetBufferPointer(), gb->GetBufferSize() }; }
             pd.BlendState = r.blend; pd.RasterizerState = r.rast; pd.DepthStencilState = r.ds; pd.DSVFormat = r.dsv; pd.PrimitiveTopologyType = r.topo;
             pd.IBStripCutValue = D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_0xFFFFFFFF; pd.SampleMask = r.sampleMask; pd.SampleDesc.Count = 1;
             pd.NumRenderTargets = r.numRt; pd.RTVFormats[0] = r.rtv[0]; pd.RTVFormats[1] = r.rtv[1];
@@ -794,6 +833,13 @@ bool Init(HWND hwnd)
     static const bool bilinear = getenv("NG2_UPSCALE") && !strcmp(getenv("NG2_UPSCALE"), "bilineal");
     auto vs = Compile(kBlitHlsl, "vs_main", "vs_5_0", "blit"), ps = Compile(kBlitHlsl, bilinear ? "ps_main" : "ps_cubic", "ps_5_0", "blit");
     g_rectGs = Compile(std::string(kXenosInterfaceHlsl) + kRectGsHlsl, "main", "gs_5_0", "rectlist_gs");
+    if (PanoAspect() > 16.0f / 9.0f + 1e-3f)
+    {   // sesion 25: GS que comprimen la interfaz 2D hacia el centro con panoramico
+        char def[64]; snprintf(def, sizeof(def), "#define KX %.6f\n", PanoAspect() / (16.0f / 9.0f));
+        g_uiGs = Compile(std::string(def) + kXenosInterfaceHlsl + kPanoUiFnHlsl + kUiGsHlsl, "main", "gs_5_0", "pano_ui_gs");
+        g_rectGsPano = Compile(std::string(def) + kXenosInterfaceHlsl + kPanoUiFnHlsl + kRectGsPanoHlsl, "main", "gs_5_0", "pano_rect_gs");
+        LOG("[d3d12] panoramico: GS de la interfaz %s", g_uiGs && g_rectGsPano ? "listos" : "NO compilados");
+    }
     if (!vs || !ps) { g_failed = true; return false; }
     D3D12_GRAPHICS_PIPELINE_STATE_DESC pd{};
     pd.pRootSignature = g_blitRootSig.Get();
@@ -939,10 +985,36 @@ void ResizeSwapIfNeeded()
     LOG("[d3d12] ventana %ux%u: cadena de intercambio redimensionada (0x%08lX)", w, h, (unsigned long)hr);
 }
 // Rectangulo 16:9 centrado en la cadena de intercambio
+// Sesion 25: panoramico (NG2_PANO / panoramico= en ng2.ini): 16:9 | auto (proporcion del monitor) | 21:9 | 32:9 | <numero>.
+// El juego elige la proporcion de su camara entre dos constantes (16/9 en 0x8228925C si la pantalla es panoramica, 4/3 en 0x822817DC);
+// se cambia la de 16/9 por la elegida y la imagen (720p) se presenta con esa proporcion.
+} // namespace
+float PanoAspect()
+{
+    static float a = [] {
+        const char* s = getenv("NG2_PANO"); float r = 16.0f / 9.0f;
+        if (!s || !*s || !strcmp(s, "16:9")) return r;
+        if (!strcmp(s, "21:9")) r = 64.0f / 27.0f;
+        else if (!strcmp(s, "32:9")) r = 32.0f / 9.0f;
+        else if (!strcmp(s, "auto")) { MONITORINFO mi{ sizeof(mi) }; GetMonitorInfoW(MonitorFromPoint(POINT{ 0, 0 }, MONITOR_DEFAULTTOPRIMARY), &mi);
+                                       float m = (float)(mi.rcMonitor.right - mi.rcMonitor.left) / std::max(1L, mi.rcMonitor.bottom - mi.rcMonitor.top); if (m > r) r = m; }
+        else { float v = (float)atof(s); if (v > 1.0f && v < 6.0f) r = v; }
+        return std::max(r, 16.0f / 9.0f);
+    }();
+    return a;
+}
+void ApplyPanoCamera()
+{
+    float a = PanoAspect(); if (a <= 16.0f / 9.0f + 1e-3f) return;
+    uint32_t u; memcpy(&u, &a, 4); *(uint32_t*)(g_base + 0x8228925C) = __builtin_bswap32(u);
+    LOG("[d3d12] panoramico: proporcion de la camara %.3f (constante 16/9 del juego sustituida)", a);
+}
+namespace {
 void PresentViewport(D3D12_VIEWPORT& vp, D3D12_RECT& sr)
 {
-    float sc = std::min(g_bbW / (float)kRtW, g_bbH / (float)kRtH);
-    float w = kRtW * sc, h = kRtH * sc;
+    float pa = PanoAspect();
+    float sc = std::min(g_bbW / ((float)kRtH * pa), g_bbH / (float)kRtH);
+    float w = kRtH * pa * sc, h = kRtH * sc;
     vp = { std::floor((g_bbW - w) * 0.5f), std::floor((g_bbH - h) * 0.5f), w, h, 0, 1 };
     sr = { 0, 0, (LONG)g_bbW, (LONG)g_bbH };
 }
@@ -3475,7 +3547,10 @@ static void D3D12DrawImpl(const XenosDraw& d)
         static int mrtLogged = 0;
         if (mrtLogged < 8) { mrtLogged++; LOG("[d3d12] MRT: PS %016llX RT1 info %08X mascara %X blend %08X -> %s", (unsigned long long)d.psHash, Reg(0x2003), mask1, bc1, rt1 ? "enlazado" : "no"); }
     }
-    uint64_t key = d.vsHash * 31 ^ d.psHash ^ (uint64_t(d.primType) << 56) ^ (uint64_t(bc) << 8) ^ (uint64_t(colorMask) << 48)
+    // Sesion 25: tipo de GS: 1 = rect list, 2 = interfaz panoramica (superficie final de 1280 en 8888), 3 = las dos cosas
+    int gsKind = rect ? 1 : 0;
+    if (g_uiGs && g_rectGsPano && ttype == D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE && !expand && (Reg(0x2000) & 0x3FFF) == 1280 && curRt->xfmt == 0) gsKind |= 2;
+    uint64_t key = (uint64_t(gsKind) * 0x2545F4914F6CDD1Dull) ^ d.vsHash * 31 ^ d.psHash ^ (uint64_t(d.primType) << 56) ^ (uint64_t(bc) << 8) ^ (uint64_t(colorMask) << 48)
                  ^ ((uint64_t(useDepth ? dc : 0) * 0x9E3779B97F4A7C15ull) ^ (uint64_t(sc) << 60)) ^ (uint64_t(curRt->fmt) * 0xC2B2AE3D27D4EB4Full)
                  ^ (rt1 ? ((uint64_t(rt1->fmt) + 1) * 0x165667B19E3779F9ull ^ (uint64_t(mask1) << 36) ^ (uint64_t(bc1) * 0x27D4EB2F165667C5ull)) : 0);
     auto& pso = g_psos[key];
@@ -3485,7 +3560,7 @@ static void D3D12DrawImpl(const XenosDraw& d)
         pd.pRootSignature = g_drawRootSig.Get();
         pd.VS = { vs.blob->GetBufferPointer(), vs.blob->GetBufferSize() };
         pd.PS = { ps.blob->GetBufferPointer(), ps.blob->GetBufferSize() };
-        if (rect) pd.GS = { g_rectGs->GetBufferPointer(), g_rectGs->GetBufferSize() };
+        if (gsKind) { ID3DBlob* gb = gsKind == 1 ? g_rectGs.Get() : gsKind == 2 ? g_uiGs.Get() : g_rectGsPano.Get(); pd.GS = { gb->GetBufferPointer(), gb->GetBufferSize() }; }
         auto& rt = pd.BlendState.RenderTarget[0];
         uint32_t cs = bc & 0x1F, cop = (bc >> 5) & 7, cd = (bc >> 8) & 0x1F, as = (bc >> 16) & 0x1F, aop = (bc >> 21) & 7, ad = (bc >> 24) & 0x1F;
         rt.BlendEnable = !(cs == 1 && cd == 0 && cop == 0 && as == 1 && ad == 0 && aop == 0);
@@ -3534,7 +3609,7 @@ static void D3D12DrawImpl(const XenosDraw& d)
         pd.NumRenderTargets = rt1 ? 2 : 1; pd.RTVFormats[0] = curRt->fmt; pd.SampleDesc.Count = 1;
         if (rt1) pd.RTVFormats[1] = rt1->fmt;
         double tPso = QpcMs(); HRESULT hrPso = S_OK;
-        if (!TakePrewarmedPso(key, pso)) { hrPso = CreatePsoCached(key, pd, pso); g_hPsos++; if (SUCCEEDED(hrPso)) RecordPso(key, pd, d.vsHash, d.psHash, rect); }
+        if (!TakePrewarmedPso(key, pso)) { hrPso = CreatePsoCached(key, pd, pso); g_hPsos++; if (SUCCEEDED(hrPso)) RecordPso(key, pd, d.vsHash, d.psHash, gsKind); }
         g_hPsoMs += QpcMs() - tPso;
         if (FAILED(hrPso)) { static int psoFailLog = 0; if (psoFailLog++ < 12) LOG("[d3d12] PSO fallido hr=%08X (prim %u, formato RT %d, rt1 %d) VS %016llX PS %016llX bc=%08X dc=%08X mask=%X", (unsigned)hrPso, d.primType, (int)curRt->fmt, rt1 ? (int)rt1->fmt : -1, (unsigned long long)d.vsHash, (unsigned long long)d.psHash, bc, useDepth ? dc : 0, colorMask); g_skipped[2]++; return; }
     }
@@ -3554,6 +3629,11 @@ static void D3D12DrawImpl(const XenosDraw& d)
         float* v = (float*)(p + 4256);
         uint32_t rtw = Reg(0x2000) & 0x3FFF; if (!rtw) rtw = kRtW;
         v[0] = (float)Reg(0x2206); v[1] = (float)rtw; v[2] = (float)kEdramH; v[3] = curRt->outScale;
+        if (cbase == 0x4000)
+        {   // Sesion 25: en el VS, XVte.w = escala Hor+ del panoramico en las superficies proporcionales a la pantalla (no sombras)
+            static const float kx = PanoAspect() / (16.0f / 9.0f);
+            v[3] = (kx > 1.001f && (rtw == 1120 || rtw == 560 || rtw == 280 || rtw == 1280 || rtw == 640 || rtw == 320)) ? kx : 0.0f;
+        }
         {   // NG2_PSOUTAT=<s> (diagnostico): las sustituciones de NG2_PSOUT solo actuan desde ese segundo (XVte.z < 0 en el PS)
             static const double psoutAt = getenv("NG2_PSOUTAT") ? atof(getenv("NG2_PSOUTAT")) : -1;
             static const double tStart = QpcMs();

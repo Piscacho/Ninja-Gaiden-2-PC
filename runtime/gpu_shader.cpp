@@ -662,6 +662,9 @@ TranslatedShader TranslateXenosShader(uint32_t type, const uint32_t* words, uint
     float w = ((vte & 0x100u) == 0) ? o.pos.w : 1.0;
     float2 ndc = float2(p.x / (XVte.y * 0.5) - 1.0, 1.0 - p.y / (XVte.z * 0.5));
     o.pos = float4(ndc * w, saturate(p.z) * w, w);
+    // Sesion 25 (panoramico Hor+): XVte.w = escala horizontal (proporcion / (16/9)) en las superficies de pantalla; los vertices en
+    // perspectiva se comprimen hacia el centro y al presentar se estira la imagen: mas vista a los lados con la misma vertical.
+    if (XVte.w > 1.0 && (vte & 0x100u) == 0 && o.pos.w != 1.0) o.pos.x /= XVte.w;
 )";
         // NG2_VSCLAMP=1 (diagnostico): descarta vertices con posicion absurda (NaN o fuera de +-64 veces la pantalla)
         if (getenv("NG2_VSCLAMP")) h += "    if (any(isnan(o.pos)) || any(isinf(o.pos)) || any(abs(ndc) > 64.0)) o.pos = float4(0, 0, 0, 0);\n";

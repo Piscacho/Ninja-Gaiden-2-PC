@@ -4,6 +4,7 @@
 #include <ppc_recomp_shared.h>
 #include <windows.h>
 #include <atomic>
+#include <cmath>
 #include <cstdlib>
 
 namespace
@@ -343,4 +344,34 @@ PPC_FUNC(sub_8374F078)
             }
         }
     }
+}
+
+// Sesion 25 (diagnostico, NG2_CAMLOG=1): argumentos de sub_822F9FB8 (camara: f1 campo de vision, f3 proporcion, f4/f5 planos)
+PPC_FUNC_IMPL(__imp__sub_822F9FB8);
+PPC_FUNC(sub_822F9FB8)
+{
+    static const bool on = getenv("NG2_CAMLOG") != nullptr;
+    if (on) { static std::atomic<int> n{ 0 }; int k = n++; if (k < 40 || k % 3000 == 0) LOG("[cam] sub_822F9FB8(r3 %08X) f1 %.4f f2 %.4f f3 %.4f f4 %.4f f5 %.4f lr %08X (%d)", ctx.r3.u32, ctx.f1.f64, ctx.f2.f64, ctx.f3.f64, ctx.f4.f64, ctx.f5.f64, (uint32_t)ctx.lr, k); }
+    __imp__sub_822F9FB8(ctx, base);
+}
+
+// Sesion 25 (panoramico Hor+): sub_837CC920 construye el frustum de la camara con f1 = campo * proporcion y f2 = 1 / proporcion:
+// tanX = tan(f1 / 2), tanY = tanX * f2 (+0x20..+0x2C), planos f3/f4. Con la proporcion panoramica (constante 16/9 sustituida en
+// ApplyPanoCamera) el angulo horizontal crecia en lineal con la proporcion (a 32:9 casi 180 grados). Aqui se conserva el tanY de
+// 16:9 y tanX = tanY * proporcion: misma vista vertical que en la consola y mas vista a los lados.
+float PanoAspect();
+PPC_FUNC_IMPL(__imp__sub_837CC920);
+PPC_FUNC(sub_837CC920)
+{
+    static const float pa = PanoAspect();
+    { static const bool camlog = getenv("NG2_CAMLOG") != nullptr; static std::atomic<int> n{ 0 }; if (camlog && n++ < 40) LOG("[cam] sub_837CC920 f1 %.5f f2 %.5f f3 %.4f f4 %.4f lr %08X pa %.4f", ctx.f1.f64, ctx.f2.f64, ctx.f3.f64, ctx.f4.f64, (uint32_t)ctx.lr, pa); }
+    static const bool horCam = getenv("NG2_PANOCAM") != nullptr;   // experimento: Hor+ en la camara del juego (por defecto se hace en el VS)
+    if (horCam && pa > 16.0f / 9.0f + 1e-3f && ctx.f2.f64 > 0 && std::fabs(ctx.f2.f64 - 1.0 / pa) < 1e-4)
+    {
+        double fov = ctx.f1.f64 * ctx.f2.f64;                       // campo de vision del juego (radianes)
+        double ty = std::tan(fov * (16.0 / 9.0) * 0.5) / (16.0 / 9.0); // vertical de 16:9
+        double tx = ty * pa;
+        ctx.f1.f64 = (double)(float)(2.0 * std::atan(tx));
+    }
+    __imp__sub_837CC920(ctx, base);
 }
