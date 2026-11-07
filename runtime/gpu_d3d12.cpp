@@ -705,6 +705,12 @@ bool Init(HWND hwnd)
     D3D12_STATIC_SAMPLER_DESC ds[2] = { samp, samp };
     ds[0].AddressU = ds[0].AddressV = ds[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
     ds[1] = ds[0]; ds[1].Filter = D3D12_FILTER_MIN_MAG_MIP_POINT; ds[1].ShaderRegister = 1;
+    {   // Sesion 23: filtrado anisotropo en s0 (NG2_ANISO = 0/2/4/8/16, por defecto 16; anisotropico= en ng2.ini). En pases a
+        // pantalla completa los gradientes son minimos y equivale al lineal; mejora suelos y paredes vistos de lado.
+        const char* a = getenv("NG2_ANISO"); int an = a ? atoi(a) : 16;
+        if (an >= 2) { ds[0].Filter = D3D12_FILTER_ANISOTROPIC; ds[0].MaxAnisotropy = (UINT)std::min(an, 16); }
+        LOG("[d3d12] filtrado de texturas: %s (x%d)", an >= 2 ? "anisotropo" : "lineal", an >= 2 ? std::min(an, 16) : 1);
+    }
     g_drawRootSig = MakeRootSig({ 4, dp, 2, ds, D3D12_ROOT_SIGNATURE_FLAG_NONE });
     if (!g_blitRootSig || !g_drawRootSig) { g_failed = true; return false; }
 

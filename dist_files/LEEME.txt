@@ -36,6 +36,7 @@ Opciones (ng2.ini)
 ------------------
   perfil=1      con perfil: el juego guarda (0 = sin perfil, sin guardado)
   vibracion=1   vibracion del mando (0 = sin vibracion)
+  anisotropico=16  filtrado de texturas (0 = lineal como en la consola; 2, 4, 8 o 16)
 
 Problemas conocidos
 -------------------

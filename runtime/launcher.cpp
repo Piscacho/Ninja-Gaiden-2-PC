@@ -97,6 +97,7 @@ LauncherConfig LoadConfig()
             // Sesion 14 de NG2: opciones del juego (las de GH no aplican) y variables de diagnostico NG2_*
             else if (k == "perfil") _putenv_s("NG2_SIGNIN", v == "0" ? "0" : "1");
             else if (k == "vibracion") { if (v == "0") _putenv_s("NG2_NOVIBRACION", "1"); }
+            else if (k == "anisotropico" && !v.empty()) _putenv_s("NG2_ANISO", v.c_str());   // sesion 23
             else if (k.rfind("NG2_", 0) == 0 && !v.empty()) _putenv_s(k.c_str(), v.c_str());
         }
         fclose(f);
@@ -113,8 +114,10 @@ void SaveConfig(const LauncherConfig& c)
                    "; datos: carpeta de partidas guardadas y DLC importado\ndatos=%s\n"
                    "; dlc: carpeta donde copiar los paquetes de DLC de Xbox 360 (se importan al arrancar)\ndlc=%s\n"
                    "; perfil: 1 = con perfil (se puede guardar), 0 = sin perfil (no se guarda)\nperfil=%s\n"
-                   "; vibracion: 1 = el mando vibra, 0 = sin vibracion\nvibracion=%s\n",
-                c.iso.c_str(), c.dataDir.c_str(), c.dlcDir.c_str(), (si && atoi(si) == 0) ? "0" : "1", getenv("NG2_NOVIBRACION") ? "0" : "1");
+                   "; vibracion: 1 = el mando vibra, 0 = sin vibracion\nvibracion=%s\n"
+                   "; anisotropico: filtrado de texturas (0 = lineal, 2, 4, 8 o 16)\nanisotropico=%s\n",
+                c.iso.c_str(), c.dataDir.c_str(), c.dlcDir.c_str(), (si && atoi(si) == 0) ? "0" : "1", getenv("NG2_NOVIBRACION") ? "0" : "1",
+                getenv("NG2_ANISO") ? getenv("NG2_ANISO") : "16");
         fclose(f);
     }
 }
