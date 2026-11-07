@@ -2925,6 +2925,24 @@ void D3D12Draw(const XenosDraw& d)
                 LOG("[vbuse] frame %llu VS %016llX PS %016llX n %u: vertices %u..%u, mascara %X blend %08X", (unsigned long long)g_frameCounter, (unsigned long long)d.vsHash, (unsigned long long)d.psHash, d.numIndices, lo, hi, Reg(0x2104) & 0xF, Reg(0x2201));
             }
         }
+        {   // NG2_VBRANGE=<lo hex>:<hi hex> (sesion 24): draws con algun stream de vertices en ese rango fisico (efectos de effpk_common)
+            static uint32_t rlo = 0, rhi = 0; static bool rinit = false;
+            if (!rinit) { rinit = true; if (const char* e = getenv("NG2_VBRANGE")) { char* q; rlo = (uint32_t)strtoul(e, &q, 16); if (*q == ':') rhi = (uint32_t)strtoul(q + 1, nullptr, 16); } }
+            static std::atomic<int> rlog{ 0 };
+            if (rhi && rlog < 200)
+                for (uint32_t slot = 88; slot < 96; slot++)
+                {
+                    uint32_t a = Reg(0x4800 + slot * 2) & 0x1FFFFFFC;
+                    if (a >= rlo && a < rhi)
+                    {
+                        rlog++;
+                        LOG("[vbrange] frame %llu slot %u @%08X VS %016llX PS %016llX prim %u n %u mascara %X blend %08X dc %08X surface %08X color0 %08X modo %u",
+                            (unsigned long long)g_frameCounter, slot, a, (unsigned long long)d.vsHash, (unsigned long long)d.psHash, d.primType, d.numIndices,
+                            Reg(0x2104) & 0xF, Reg(0x2201), Reg(0x2200), Reg(0x2000), Reg(0x2001), Reg(0x2208) & 7);
+                        break;
+                    }
+                }
+        }
         if (cvs && d.vsHash == cvs && logged < 16)
         {
             logged++;

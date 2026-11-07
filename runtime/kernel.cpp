@@ -83,6 +83,8 @@ void GuestHeapStatsLog()   // sesion 23: memoria en uso por monton (se llama cad
         const uint8_t* p = g_base + 0xA54C6000; uint32_t nz = 0; for (uint32_t i = 0; i < 0x983000; i += 64) nz += p[i] != 0;
         char h[80]; snprintf(h, sizeof(h), "%02X%02X%02X%02X %02X%02X%02X%02X", p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7]);
         LOG("[eff] bufer effpk_common A54C6000: %s, %u de %u muestras no nulas", h, nz, 0x983000u / 64);
+        static bool dumped = false;
+        if (nz && !dumped) { dumped = true; if (FILE* f = fopen("effpk_common.bin", "wb")) { fwrite(p, 1, 0x983000, f); fclose(f); } LOG("[eff] volcado effpk_common.bin"); }
     }
     std::lock_guard lock(g_allocMutex);
     LOG("[mem] en uso: virtual %llu MB (tope %08X, %zu huecos), fisica %llu MB (tope %08X, %zu huecos), kernel %llu KB",

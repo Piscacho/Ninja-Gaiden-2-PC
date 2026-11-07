@@ -163,6 +163,14 @@ struct Reader
 
 void ExecuteRange(Reader& rd, uint32_t endPos, int depth);
 
+// Sesion 24 (diagnostico): NG2_VIZLOG=<segundos>: desde ese segundo registra ZPD, VIZ_QUERY y REG_TO_MEM (maximo 300 lineas)
+static bool VizLogOn()
+{
+    static const char* e = getenv("NG2_VIZLOG"); if (!e) return false;
+    static const DWORD t0 = [] { FILETIME c, e, k, u; GetProcessTimes(GetCurrentProcess(), &c, &e, &k, &u); FILETIME now; GetSystemTimeAsFileTime(&now); uint64_t a = (uint64_t(c.dwHighDateTime) << 32) | c.dwLowDateTime, b = (uint64_t(now.dwHighDateTime) << 32) | now.dwLowDateTime; return GetTickCount() - (DWORD)((b - a) / 10000); }(); static std::atomic<int> n{ 0 };
+    if ((GetTickCount() - t0) / 1000.0 < atof(e)) return false;
+    return n.fetch_add(1) < 300;
+}
 bool ExecutePacket(Reader& rd, int depth)
 {
     uint32_t h = rd.Read();
@@ -185,6 +193,19 @@ bool ExecutePacket(Reader& rd, int depth)
     }
     uint32_t op = (h >> 8) & 0x7F, count = ((h >> 16) & 0x3FFF) + 1;
     uint32_t start = rd.pos;
+    {   // Sesion 24 (diagnostico): NG2_PM4STATS=1 cuenta los paquetes de tipo 3 por codigo y los registra cada ~10 s
+        static const bool st = getenv("NG2_PM4STATS") != nullptr;
+        if (st)
+        {
+            static std::atomic<uint64_t> cnt[128]; static std::atomic<uint64_t> tot{ 0 };
+            cnt[op]++;
+            if ((++tot % 2000000) == 0)
+            {
+                std::string m; for (int i = 0; i < 128; i++) { uint64_t c = cnt[i].load(); if (c) { char b[32]; snprintf(b, sizeof(b), " %02X:%llu", i, (unsigned long long)c); m += b; } }
+                LOG("[pm4stats]%s", m.c_str());
+            }
+        }
+    }
     static int traced = 0;
     static const bool pm4ring = getenv("NG2_PM4RING") != nullptr;   // NG2: historial de los ultimos 64 paquetes
     if (pm4ring)
@@ -261,6 +282,8 @@ bool ExecutePacket(Reader& rd, int depth)
     {
         uint32_t info = rd.Read(), addr = rd.Read(), ref = rd.Read(), mask = rd.Read(), waddr = rd.Read(), wdata = rd.Read();
         uint32_t v = (info & 0x10) ? GpuLoad(addr) : Reg(addr & 0xFFFF);
+        if (VizLogOn()) LOG("[viz] COND_WRITE info %08X %s %08X = %08X ref %08X mask %08X -> %s %08X <- %08X (%s)", info, (info & 0x10) ? "mem" : "reg", addr, v, ref, mask,
+            (info & 0x100) ? "mem" : "reg", waddr, wdata, Compare(info, v & mask, ref) ? "cumple" : "no cumple");
         if (Compare(info, v & mask, ref)) { if (info & 0x100) GpuStore(waddr, wdata); else WriteRegister(waddr, wdata); }
         break;
     }
@@ -273,6 +296,7 @@ bool ExecutePacket(Reader& rd, int depth)
     case PM4_REG_TO_MEM:
     {
         uint32_t reg = rd.Read(), addr = rd.Read();
+        if (VizLogOn()) LOG("[viz] REG_TO_MEM reg %04X = %08X -> %08X", reg & 0xFFFF, Reg(reg & 0xFFFF), addr);
         GpuStore(addr, Reg(reg & 0xFFFF));
         break;
     }
@@ -299,8 +323,9 @@ bool ExecutePacket(Reader& rd, int depth)
     case PM4_DRAW_INDX:
     case PM4_DRAW_INDX_2:
     {
-        if (op == PM4_DRAW_INDX) rd.Read(); // viz query
+        uint32_t viz = op == PM4_DRAW_INDX ? rd.Read() : 0; // viz query
         uint32_t init = rd.Read();
+        if (viz && VizLogOn()) LOG("[viz] DRAW_INDX viz %08X init %08X (prim %u, n %u)", viz, init, init & 0x3F, init >> 16);
         XenosDraw d;
         d.primType = init & 0x3F; d.source = (init >> 6) & 3; d.index32 = (init >> 11) & 1; d.numIndices = init >> 16;
         if (op == PM4_DRAW_INDX && d.source == 0)
@@ -433,15 +458,33 @@ bool ExecutePacket(Reader& rd, int depth)
             uint32_t* sc = (uint32_t*)(g_base + Phys(addr & ~3u));
             const uint32_t kFinished = 0xEDFEFFFFu; // 0xFFFFFEED escrito en big endian, leido en little endian
             bool endZPass = sc[4] == kFinished && sc[5] == kFinished, endZFail = sc[2] == kFinished && sc[3] == kFinished;
+            if (VizLogOn()) LOG("[viz] ZPD en %08X: %08X %08X %08X %08X %08X %08X %08X %08X (fin %d)", addr, __builtin_bswap32(sc[0]), __builtin_bswap32(sc[1]), __builtin_bswap32(sc[2]), __builtin_bswap32(sc[3]), __builtin_bswap32(sc[4]), __builtin_bswap32(sc[5]), __builtin_bswap32(sc[6]), __builtin_bswap32(sc[7]), endZPass || endZFail);
             memset(sc, 0, 32);
             if (endZPass || endZFail) { sc[4] = (uint32_t)fake; sc[0] = (uint32_t)fake; }
             static int logged = 0; if (logged < 3) { logged++; LOG("[gpu] EVENT_WRITE_ZPD en %08X (fin %d)", addr, endZPass || endZFail); }
         }
         break;
     }
+    case PM4_EVENT_WRITE:
+    {   // Sesion 24 (diagnostico): NG2_PM4STATS=1 cuenta los tipos de evento (VGT_EVENT_INITIATOR) y los registros de muestras
+        static const bool st = getenv("NG2_PM4STATS") != nullptr;
+        uint32_t init = rd.Read();
+        if (st)
+        {
+            static std::atomic<uint64_t> ev[64]; static std::atomic<uint64_t> tot{ 0 };
+            ev[init & 0x3F]++;
+            if ((++tot % 20000) == 0)
+            {
+                std::string m; for (int i = 0; i < 64; i++) { uint64_t c = ev[i].load(); if (c) { char b[32]; snprintf(b, sizeof(b), " %02X:%llu", i, (unsigned long long)c); m += b; } }
+                LOG("[pm4stats] EVENT_WRITE tipos:%s | RB_SAMPLE_COUNT_CTL %08X ADDR %08X", m.c_str(), Reg(0x2324), Reg(0x2325));
+            }
+        }
+        break;
+    }
     case PM4_VIZ_QUERY:
     {
         uint32_t dw0 = rd.Read(), id = dw0 & 0x3F;
+        if (VizLogOn()) LOG("[viz] VIZ_QUERY %08X (id %u, %s)", dw0, id, (dw0 & 0x100) ? "fin" : "inicio");
         if ((dw0 & 0x100) && id < 32) WriteRegister(0x0C44 /*PA_SC_VIZ_QUERY_STATUS_0*/, Reg(0x0C44) | (1u << id));
         break;
     }

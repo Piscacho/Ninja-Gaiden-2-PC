@@ -75,3 +75,20 @@ Diagnósticos nuevos: `NG2_EFFLOG=1` (ganchos en `sub_8365D730`, `sub_822FF5A8`,
   (326 entradas). **Nunca falla** (10 001 llamadas en combate, 0 nulas): descartado.
 - Siguiente: seguir desde `sub_82417060` hacia lo que hace con un golpe acertado (¿llama a un generador de efectos?), y con Xenia,
   volcar los shaders de un combate para identificar los de sangre/almas.
+
+## Quinta parte (sin Xenia, a petición del usuario)
+
+- `effpk_common` es un contenedor GMD con **276 objetos de geometría** (`ObjGeo`/`GeoDecl`/`ObjInfo`): los efectos son mallas.
+  Volcado con `NG2_EFFLOG=1` → `run/effpk_common.bin`.
+- `NG2_VBRANGE=054C6000:05E49000` (draws con vértices del paquete): en ~4 min de combate solo **8 draws de efectos**
+  (VS 4ADD4846 + PS FE97356E, tiras de 125 índices; VS 9C2D2BCB + PS 7397BAF4). Los efectos casi no se crean.
+- Los draws de puntos sin color (VS 89F5495C) **no son consultas de oclusión**: el VS solo pone la posición (0,0,0,1) (draw vacío
+  interno del D3D). El juego no usa `EVENT_WRITE_ZPD` (0 veces), ni `VIZ_QUERY`, ni marcas de consulta en `DRAW_INDX`;
+  `RB_SAMPLE_COUNT_ADDR` = 0. Los `COND_WRITE` son la sincronización de constantes del D3D (registro 0x1925 → 0x1922).
+- Paquetes PM4 en combate (`NG2_PM4STATS=1`): 21, 22, 27, 2B, 2F, 36, 3B, 3C, 3F, 45, 46 (eventos 0x06 y 0x0F), 48, 54, 58,
+  60-63 (máscaras de bins, una vez por frame), 64.
+- Pétalos de cerezo: el VS D2AE0887 tiene búferes estáticos (es follaje animado), no partículas de la CPU.
+
+Siguiente: encontrar qué crea los efectos de golpe/muerte. La creación es rara (8 en 4 min), así que el fallo está antes del
+dibujo: en la decisión de crear el efecto o en su lista de instancias.
+Diagnósticos nuevos: `NG2_VBRANGE`, `NG2_PM4STATS`, `NG2_VIZLOG=<s>` (ZPD/VIZ/REG_TO_MEM/COND_WRITE/viz de DRAW_INDX).
