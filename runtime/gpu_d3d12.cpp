@@ -1458,11 +1458,14 @@ bool BindTexture(uint32_t tf, D3D12_CPU_DESCRIPTOR_HANDLE slot)
                 }
                 const uint32_t* sp = (const uint32_t*)(src + so);
                 uint32_t* dp = (uint32_t*)(dst + by * rowPitch + bx * blockBytes);
-                for (uint32_t k = 0; k < blockBytes / 4; k++) dp[k] = Swap32(sp[k], endian);
+                // Sesion 23 (rendimiento): se convierte en un bufer local y se escribe una sola vez. dst es memoria de subida (escritura
+                // combinada): leerla de vuelta (DecodeDepth24(dp[0]), c16[k]) costaba ~180 ns por texel.
+                uint32_t tmp[4];
+                for (uint32_t k = 0; k < blockBytes / 4; k++) tmp[k] = Swap32(sp[k], endian);
                 if (conv == 3)
                 {
                     // Cada componente de 16 bits -> half, con su signo y el exp_adjust de la constante
-                    uint16_t* c16 = (uint16_t*)dp;
+                    uint16_t* c16 = (uint16_t*)tmp;
                     float mul = ldexpf(1.0f, expAdjust);
                     for (uint32_t k = 0; k < blockBytes / 2; k++)
                     {
@@ -1474,9 +1477,10 @@ bool BindTexture(uint32_t tf, D3D12_CPU_DESCRIPTOR_HANDLE slot)
                 else if (conv)
                 {
                     // 24 bits de profundidad en la parte alta, stencil en la baja
-                    float z = DecodeDepth24(dp[0] >> 8, conv == 2);
-                    memcpy(dp, &z, 4);
+                    float z = DecodeDepth24(tmp[0] >> 8, conv == 2);
+                    memcpy(tmp, &z, 4);
                 }
+                for (uint32_t k = 0; k < blockBytes / 4; k++) dp[k] = tmp[k];
             }
         }
         };
