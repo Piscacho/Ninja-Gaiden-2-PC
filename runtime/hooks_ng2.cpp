@@ -291,3 +291,56 @@ PPC_FUNC(sub_82385A00)
     static int n = 0; static double tot = 0; double ms = (b.QuadPart - a.QuadPart) * 1000.0 / f.QuadPart; tot += ms; n++;
     if (ms > 1.0 || n % 500 == 0) LOG("[path] sub_82385A00(%08X, %08X, %08X) lr %08X: %.2f ms -> %08X (llamadas %d, total %.0f ms)", r3, r4, r5, lr, ms, ctx.r3.u32, n, tot);
 }
+
+// Sesion 25: barrera de los hilos de XAudio (sub_8374F078). Cada hilo pone a 1 el byte de su CPU (KPCR+0x10C) en una palabra de
+// 64 bits y espera a que esten todos los de la mascara (campos +0x134..+0x148 del objeto); el que la ve completa la pone a 0. Si el
+// que completa vuelve a entrar en la ronda siguiente antes de que el otro vea el 0 (en el PC, con el otro hilo desplanificado unos
+// ms), los dos se quedan esperando para siempre: el audio se paraba a los 1-8 minutos (todo, musica y efectos). Ahora es una
+// barrera con contador de generacion en el host (sin esa carrera); la palabra del juego se sigue actualizando igual.
+// NG2_OLDAUDIOBARRIER=1 = la del juego.
+#include <unordered_map>
+#include <mutex>
+#include <intrin.h>
+PPC_FUNC_IMPL(__imp__sub_8374F078);
+PPC_FUNC(sub_8374F078)
+{
+    static const bool old = getenv("NG2_OLDAUDIOBARRIER") != nullptr;
+    if (old) { __imp__sub_8374F078(ctx, base); return; }
+    uint32_t obj = ctx.r3.u32, word = ctx.r4.u32;
+    if (Load32(obj + 0x130) == 0) return;
+    uint32_t cpu = base[ctx.r13.u32 + 0x10C] & 7;
+    uint64_t expected = 0;
+    for (int k = 0; k < 6; k++) if (Load32(obj + 0x134 + 4 * k)) expected |= 1ull << (56 - 8 * k);
+    uint64_t mine = cpu < 8 ? 1ull << (56 - 8 * cpu) : 0;
+    struct Bar { uint64_t arrived = 0; std::atomic<uint64_t> gen{ 0 }; };
+    static std::mutex m; static std::unordered_map<uint32_t, Bar*> bars;
+    Bar* b; uint64_t g;
+    {
+        std::lock_guard lk(m);
+        Bar*& slot = bars[word]; if (!slot) slot = new Bar; b = slot;
+        base[word + cpu] = 1;
+        b->arrived |= mine;
+        if (expected && (b->arrived & expected) == expected)
+        {
+            b->arrived = 0; memset(base + word, 0, 8);
+            b->gen.fetch_add(1);
+            return;
+        }
+        g = b->gen.load();
+    }
+    LARGE_INTEGER f, t0, t1; QueryPerformanceFrequency(&f); QueryPerformanceCounter(&t0);
+    bool warned = false;
+    for (uint32_t spins = 0; b->gen.load() == g; spins++)
+    {
+        if (spins < 4000) _mm_pause(); else SwitchToThread();
+        if ((spins & 0xFFF) == 0xFFF && !warned)
+        {
+            QueryPerformanceCounter(&t1);
+            if ((t1.QuadPart - t0.QuadPart) > f.QuadPart / 4)
+            {
+                warned = true; static std::atomic<int> nw{ 0 };
+                if (nw++ < 20) { std::lock_guard lk(m); LOG("[audio] barrera de XAudio %08X lleva >250 ms: cpu %u, llegados %016llX, mascara %016llX", word, cpu, (unsigned long long)b->arrived, (unsigned long long)expected); }
+            }
+        }
+    }
+}
