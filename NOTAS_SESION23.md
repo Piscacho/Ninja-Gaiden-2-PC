@@ -33,12 +33,22 @@ Desglose nuevo en `[tiron]`: `texturas N ms (crear X ms xN, subir Y ms xN)`.
 - Lo que queda del peor corte (**89 ms**, antes 345): ~25 ms de 61 PSO, ~25 ms de texturas y el resto del propio juego.
 - El tirón de ~115 ms hacia el segundo 60 es la carga del capítulo del propio juego (pantalla «NOW LOADING»).
 
-## 3. Filtrado anisótropo
+## 3. Compilación asíncrona de shaders (primer arranque)
+
+- Sin caché (`NG2_NOSHADERCACHE=1`, o un jugador nuevo con la distribución), el juego se congelaba **31 s en total** en los
+  primeros minutos: cada shader nuevo se compilaba en el momento del draw, uno detrás de otro (54 shaders en un corte = 12,6 s;
+  10 shaders pesados = 8,5 s, ~850 ms cada uno).
+- Ahora `GetShader` traduce en el momento; si el binario está en `shadercache` se usa al instante, y si no, la compilación va a
+  un grupo de hilos propio (`EnqueueCompile`, prioridad baja) y los draws de ese shader se omiten hasta que esté listo
+  (`ShaderEntry::state`). Resultado sin caché: **0,4 s** de tirones en total. Con la caché llena no cambia nada.
+- Contrapartida: la primera vez que aparece un efecto puede faltar unos instantes. `NG2_SYNCSHADERS=1` = como antes.
+
+## 4. Filtrado anisótropo
 
 - El muestreador s0 (lineal) pasa a anisótropo ×16 por defecto (`NG2_ANISO`, `anisotropico=` en ng2.ini; 0 = lineal como
   antes). Sin coste medible (60 fps igual) ni cambios en planos frontales.
 
-## 4. Otras comprobaciones
+## 5. Otras comprobaciones
 
 - Bajada de fps: no es un fallo (cinemáticas a 30 fps a propósito; sesión 22).
 - Volcado por frame de 046D0000: ya no aparece (0 volcados por frame en toda la partida).

@@ -113,7 +113,7 @@ static const bool g_depth32 = getenv("NG2_DEPTH32") != nullptr;
 static const DXGI_FORMAT kDepthFmt = g_depth32 ? DXGI_FORMAT_D32_FLOAT_S8X24_UINT : DXGI_FORMAT_D24_UNORM_S8_UINT;
 static const DXGI_FORMAT kDepthSrvFmt = g_depth32 ? DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS : DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
 
-struct ShaderEntry { bool ok = false; ComPtr<ID3DBlob> blob; TranslatedShader info; };
+struct ShaderEntry { bool ok = false; ComPtr<ID3DBlob> blob; TranslatedShader info; std::atomic<int> state{ 0 }; };   // state: 0 sin compilar, 1 compilando (asincrono), 2 listo
 std::unordered_map<uint64_t, ShaderEntry> g_shaders;
 std::unordered_map<uint64_t, ComPtr<ID3D12PipelineState>> g_psos;
 // Sesion 23 (rendimiento): biblioteca de PSO en disco (shadercache/pso.lib, ID3D12PipelineLibrary). Las partidas siguientes cargan
@@ -337,6 +337,7 @@ double g_hCompileMs = 0, g_hPsoMs = 0, g_hTexMs = 0, g_hWaitMs = 0, g_hTexCreate
 uint32_t g_hCompiles = 0, g_hCacheHits = 0, g_hPsos = 0, g_hFlushes = 0;
 double g_hFlushMs = 0, g_hDrawMs = 0, g_hPresentMs = 0;
 thread_local bool t_prewarm = false;   // hilos de precompilacion: no cuentan en la medicion de tirones
+thread_local bool t_cacheOnly = false; // sesion 23: Compile() solo mira la cache en disco (sin compilar)
 std::mutex g_xlatMutex;                // el traductor usa estado global (g_curIsPs, g_xlatNoGrad)
 uint64_t Fnv64(const void* d, size_t n, uint64_t h = 1469598103934665603ull)
 {
@@ -383,6 +384,7 @@ ComPtr<ID3DBlob> Compile(const std::string& src, const char* entry, const char* 
             CloseHandle(h); code.Reset();
         }
     }
+    if (t_cacheOnly) return nullptr;
     if (!t_prewarm) g_hCompiles++;
     HRESULT hrc = D3DCompile(src.data(), src.size(), name, nullptr, nullptr, entry, target, D3DCOMPILE_OPTIMIZATION_LEVEL1 | (StrictVs(target) ? D3DCOMPILE_IEEE_STRICTNESS : 0), 0, &code, &err);
     if (FAILED(hrc))
@@ -948,26 +950,70 @@ D3D12_BLEND_OP MapOp(uint32_t o)
     switch (o) { case 1: return D3D12_BLEND_OP_SUBTRACT; case 2: return D3D12_BLEND_OP_MIN; case 3: return D3D12_BLEND_OP_MAX; case 4: return D3D12_BLEND_OP_REV_SUBTRACT; default: return D3D12_BLEND_OP_ADD; }
 }
 
-ShaderEntry& GetShader(uint32_t type, const uint32_t* code, uint32_t count, uint64_t hash)
+// Compila (o recupera de la cache) el shader de una entrada ya traducida; deja e.blob/e.ok y marca state = 2.
+static void CompileShaderEntry(ShaderEntry& e, uint32_t type, const uint32_t* code, uint32_t count, uint64_t hash)
 {
-    auto it = g_shaders.find(hash);
-    if (it != g_shaders.end()) return it->second;
-    ShaderEntry& e = g_shaders[hash];
-    { std::lock_guard<std::mutex> lk(g_xlatMutex); e.info = TranslateXenosShader(type, code, count); }
-    if (e.info.ok && ApplyShaderOverrides(type, hash, e.info.hlsl)) LOG("[d3d12] sustitucion aplicada a %016llX", (unsigned long long)hash);
-    if (!e.info.ok) { LOG("[d3d12] shader %016llX no traducido: %s", (unsigned long long)hash, e.info.error.c_str()); return e; }
     char name[64]; snprintf(name, sizeof(name), "%s_%016llX", type ? "ps" : "vs", (unsigned long long)hash);
-    e.blob = Compile(e.info.hlsl, "main", type ? "ps_5_0" : "vs_5_0", name);
-    if (!e.blob && type == 1 && e.info.hlsl.find("SampleGrad") != std::string::npos)
+    ComPtr<ID3DBlob> blob = Compile(e.info.hlsl, "main", type ? "ps_5_0" : "vs_5_0", name);
+    if (!blob && type == 1 && e.info.hlsl.find("SampleGrad") != std::string::npos && code)
     {
         // Sesion 24: los gradientes dentro de flujo de control variable no compilan: se retraduce con nivel 0 fijo
         TranslatedShader t2;
         { std::lock_guard<std::mutex> lk(g_xlatMutex); g_xlatNoGrad = true; t2 = TranslateXenosShader(type, code, count); g_xlatNoGrad = false; }
         if (t2.ok) ApplyShaderOverrides(type, hash, t2.hlsl);
-        if (t2.ok) { e.info = t2; e.blob = Compile(e.info.hlsl, "main", "ps_5_0", name); LOG("[d3d12] PS %016llX sin gradientes (nivel 0): %s", (unsigned long long)hash, e.blob ? "ok" : "falla"); }
+        if (t2.ok) { e.info = t2; blob = Compile(e.info.hlsl, "main", "ps_5_0", name); LOG("[d3d12] PS %016llX sin gradientes (nivel 0): %s", (unsigned long long)hash, blob ? "ok" : "falla"); }
     }
-    e.ok = e.blob != nullptr;
-    return e;
+    e.blob = blob; e.ok = blob != nullptr;
+    e.state.store(2, std::memory_order_release);
+}
+// Sesion 23: compilacion asincrona. Un shader nuevo se traduce en el momento y se compila en un grupo de hilos propio; mientras,
+// sus draws se omiten (antes el primer arranque se congelaba 31 s en total: 54 shaders seguidos en un corte = 12,6 s).
+// NG2_SYNCSHADERS=1 = compilar en el momento como antes.
+struct CompileJob { ShaderEntry* e; uint32_t type; std::vector<uint32_t> code; uint64_t hash; };
+static void EnqueueCompile(CompileJob job)
+{
+    static std::mutex m; static std::condition_variable cv; static std::vector<CompileJob> q;
+    static std::once_flag once;
+    std::call_once(once, [] {
+        unsigned n = std::max(2u, std::min(6u, std::thread::hardware_concurrency() / 2));
+        for (unsigned i = 0; i < n; i++)
+            std::thread([] {
+                t_prewarm = true;   // no cuenta en las estadisticas de tirones del hilo de la GPU
+                SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+                for (;;)
+                {
+                    CompileJob j;
+                    { std::unique_lock<std::mutex> l(m); cv.wait(l, [] { return !q.empty(); }); j = std::move(q.back()); q.pop_back(); }
+                    CompileShaderEntry(*j.e, j.type, j.code.data(), (uint32_t)j.code.size(), j.hash);
+                }
+            }).detach();
+    });
+    { std::lock_guard<std::mutex> l(m); q.push_back(std::move(job)); }
+    cv.notify_one();
+}
+ShaderEntry& GetShader(uint32_t type, const uint32_t* code, uint32_t count, uint64_t hash)
+{
+    auto it = g_shaders.find(hash);
+    if (it != g_shaders.end())
+    {
+        ShaderEntry& e = it->second;
+        if (e.state.load(std::memory_order_acquire) == 1) { static ShaderEntry pending; return pending; }   // aun compilando: ok = false
+        return e;
+    }
+    ShaderEntry& e = g_shaders[hash];
+    { std::lock_guard<std::mutex> lk(g_xlatMutex); e.info = TranslateXenosShader(type, code, count); }
+    if (e.info.ok && ApplyShaderOverrides(type, hash, e.info.hlsl)) LOG("[d3d12] sustitucion aplicada a %016llX", (unsigned long long)hash);
+    if (!e.info.ok) { LOG("[d3d12] shader %016llX no traducido: %s", (unsigned long long)hash, e.info.error.c_str()); e.state = 2; return e; }
+    static const bool sync = getenv("NG2_SYNCSHADERS") != nullptr;
+    if (sync) { CompileShaderEntry(e, type, code, count, hash); return e; }
+    {   // ya en la cache de disco: al momento
+        char name[64]; snprintf(name, sizeof(name), "%s_%016llX", type ? "ps" : "vs", (unsigned long long)hash);
+        t_cacheOnly = true; ComPtr<ID3DBlob> blob = Compile(e.info.hlsl, "main", type ? "ps_5_0" : "vs_5_0", name); t_cacheOnly = false;
+        if (blob) { e.blob = blob; e.ok = true; e.state = 2; return e; }
+    }
+    e.state = 1;
+    EnqueueCompile({ &e, type, std::vector<uint32_t>(code, code + count), hash });
+    static ShaderEntry pending; return pending;
 }
 
 uint64_t g_skipped[16] = {};
