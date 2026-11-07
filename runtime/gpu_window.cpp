@@ -9,6 +9,7 @@
 #include <vector>
 #include <string>
 #include <atomic>
+extern std::atomic<bool> g_showStats;   // gpu_d3d12.cpp: contador en pantalla (F3, sesion 25)
 bool D3D12Present(HWND hwnd, const uint32_t* pixels, uint32_t w, uint32_t h);
 bool D3D12PresentResolved(HWND hwnd, uint32_t fb, std::vector<uint32_t>* readback, uint32_t& outW, uint32_t& outH);
 std::atomic<int> g_dumpRequest{ -1 };   // >= 0: guardar shot_<n>.bmp en el siguiente present
@@ -86,6 +87,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l)
     case WM_CLOSE: ExitProcess(0);
     // Pantalla completa sin bordes con F11 o Alt+Enter (sesion 23). El swapchain es de 1280x720 y se escala solo.
     case WM_SYSKEYDOWN: case WM_KEYDOWN:
+        if (w == VK_F3 && m == WM_KEYDOWN && !(l & (1 << 30))) { g_showStats = !g_showStats; return 0; }   // sesion 25: contador (F3)
         if (w == VK_F12 && m == WM_KEYDOWN)   // F12: captura de pantalla shot_9xx.bmp (sesion 23, para informar de fallos)
         {
             static int n = 900;

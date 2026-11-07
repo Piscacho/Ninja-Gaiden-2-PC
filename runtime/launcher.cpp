@@ -98,6 +98,7 @@ LauncherConfig LoadConfig()
             else if (k == "perfil") _putenv_s("NG2_SIGNIN", v == "0" ? "0" : "1");
             else if (k == "vibracion") { if (v == "0") _putenv_s("NG2_NOVIBRACION", "1"); }
             else if (k == "anisotropico" && !v.empty()) _putenv_s("NG2_ANISO", v.c_str());   // sesion 23
+            else if (k == "mostrar_fps") _putenv_s("NG2_FPS", v == "1" ? "1" : "0");   // sesion 25: contador en pantalla (F3)
             else if (k.rfind("NG2_", 0) == 0 && !v.empty()) _putenv_s(k.c_str(), v.c_str());
         }
         fclose(f);

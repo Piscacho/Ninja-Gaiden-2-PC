@@ -8,6 +8,9 @@
 #include <d3d12.h>
 #include <dxgi1_4.h>
 #include <d3dcompiler.h>
+#include <psapi.h>
+#pragma comment(lib, "psapi.lib")
+#pragma comment(lib, "dxgi.lib")
 #include <wrl/client.h>
 #include <cstring>
 #include <cstdarg>
@@ -57,6 +60,7 @@ UINT64 g_fenceValues[kFrames] = {}, g_nextFence = 1;
 HANDLE g_fenceEvent = nullptr;
 UINT g_rtvSize = 0, g_srvSize = 0;
 ComPtr<ID3D12RootSignature> g_blitRootSig, g_drawRootSig;
+extern ComPtr<ID3D12PipelineState> g_overlayPso;   // contador en pantalla (sesion 25)
 ComPtr<ID3D12PipelineState> g_blitPso;
 ComPtr<ID3D12Resource> g_fbTexture, g_fbUpload[kFrames];
 UINT g_fbW = 0, g_fbH = 0;
@@ -239,6 +243,7 @@ V vs_main(uint id : SV_VertexID)
     return o;
 }
 float4 ps_main(V i) : SV_Target { return float4(t0.Sample(s0, i.uv).rgb, 1); }
+float4 ps_overlay(V i) : SV_Target { return t0.SampleLevel(s0, i.uv, 0); }   // sesion 25: contador (alfa premultiplicado)
 // Sesion 24: escalado nitido a la ventana (Catmull-Rom con 9 lecturas bilineales). A 1:1 reproduce la imagen exacta.
 float4 ps_cubic(V i) : SV_Target
 {
@@ -799,6 +804,14 @@ bool Init(HWND hwnd)
     pd.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     pd.NumRenderTargets = 1; pd.RTVFormats[0] = DXGI_FORMAT_B8G8R8A8_UNORM; pd.SampleDesc.Count = 1;
     if (!Check(g_dev->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&g_blitPso)), "CreateGraphicsPipelineState")) return false;
+    if (auto ops = Compile(kBlitHlsl, "ps_overlay", "ps_5_0", "overlay"))   // sesion 25: contador en pantalla
+    {
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC od = pd; od.PS = { ops->GetBufferPointer(), ops->GetBufferSize() };
+        auto& bt = od.BlendState.RenderTarget[0];
+        bt.BlendEnable = TRUE; bt.SrcBlend = D3D12_BLEND_ONE; bt.DestBlend = D3D12_BLEND_INV_SRC_ALPHA; bt.BlendOp = D3D12_BLEND_OP_ADD;
+        bt.SrcBlendAlpha = D3D12_BLEND_ONE; bt.DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA; bt.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+        g_dev->CreateGraphicsPipelineState(&od, IID_PPV_ARGS(&g_overlayPso));
+    }
     // Copia de profundidad por GPU (sesion 21): lee el plano de profundidad y escribe R32_FLOAT + RGBA8 con los bits 24_8 empaquetados
     {
         D3D12_DESCRIPTOR_RANGE rd{ D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0, 0, 0 };
@@ -946,6 +959,147 @@ UINT64 RingAlloc(UINT64 size, UINT64 align = 256)
     }
     g_ringOffset = o + size;
     return o;
+}
+
+// ---- Sesion 25: contador en pantalla (F3; mostrar_fps=1 en ng2.ini / NG2_FPS=1). Basado en el de Guitar Hero, con mas datos:
+// FPS, tiempo por frame (media, maximo y 1% mas lento), tirones, draws, CPU del proceso, memoria de video y RAM, resolucion y audio.
+// Se dibuja con GDI en una textura (alfa premultiplicado) y se pinta encima de la imagen en la esquina superior izquierda.
+ComPtr<ID3D12PipelineState> g_overlayPso; ComPtr<ID3D12Resource> g_overlayTex;
+D3D12_RESOURCE_STATES g_overlayState = D3D12_RESOURCE_STATE_COPY_DEST;
+constexpr UINT kOverlaySrvSlot = 22, kOverlayW = 512, kOverlayH = 128;   // 512*4 = 2048 bytes por fila (multiplo de 256)
+std::vector<uint32_t> g_overlayPixels; bool g_overlayDirty = false;
+} // namespace
+std::atomic<bool> g_showStats{ getenv("NG2_FPS") && atoi(getenv("NG2_FPS")) != 0 };   // F3 (gpu_window.cpp)
+size_t AudioQueuedFrames();   // audio_wasapi.cpp
+namespace {
+static void OverlayRender(const std::vector<std::pair<std::string, COLORREF>>& lines)
+{
+    static HDC dc = nullptr; static HBITMAP bmp = nullptr; static uint32_t* bits = nullptr; static HFONT font = nullptr;
+    if (!dc)
+    {
+        dc = CreateCompatibleDC(nullptr);
+        BITMAPINFO bi{}; bi.bmiHeader.biSize = sizeof(bi.bmiHeader); bi.bmiHeader.biWidth = kOverlayW; bi.bmiHeader.biHeight = -(int)kOverlayH;
+        bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 32;
+        bmp = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, (void**)&bits, nullptr, 0);
+        SelectObject(dc, bmp);
+        font = CreateFontW(-17, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0, ANTIALIASED_QUALITY, FIXED_PITCH, L"Consolas");
+        SelectObject(dc, font);
+    }
+    if (!bits) return;
+    g_overlayPixels.assign(kOverlayW * kOverlayH, 0);
+    const int lineH = 22, pad = 8;
+    int panelW = 0, panelH = pad * 2 + lineH * (int)lines.size();
+    for (size_t li = 0; li < lines.size(); li++)
+    {
+        memset(bits, 0, kOverlayW * kOverlayH * 4);
+        SetBkMode(dc, TRANSPARENT); SetTextColor(dc, RGB(255, 255, 255));
+        wchar_t wt[160]; int wn = MultiByteToWideChar(CP_UTF8, 0, lines[li].first.c_str(), -1, wt, 160); if (wn <= 0) { wt[0] = 0; wn = 1; }
+        SIZE sz{}; GetTextExtentPoint32W(dc, wt, wn - 1, &sz); panelW = std::max<int>(panelW, sz.cx + pad * 2);
+        int y0 = pad + (int)li * lineH;
+        TextOutW(dc, pad, y0 + (lineH - sz.cy) / 2, wt, wn - 1);
+        COLORREF c = lines[li].second; float cr = GetRValue(c) / 255.0f, cg = GetGValue(c) / 255.0f, cb = GetBValue(c) / 255.0f;
+        for (int y = y0; y < y0 + lineH && y < (int)kOverlayH; y++)
+            for (UINT x = 0; x < kOverlayW; x++)
+            {
+                uint32_t q = bits[y * kOverlayW + x];
+                float t = std::max({ (q >> 16) & 255, (q >> 8) & 255, q & 255 }) / 255.0f;
+                if (t <= 0) continue;
+                uint32_t r = (uint32_t)(cr * t * 255), gg = (uint32_t)(cg * t * 255), b = (uint32_t)(cb * t * 255), al = (uint32_t)(t * 255);
+                g_overlayPixels[y * kOverlayW + x] = b | (gg << 8) | (r << 16) | (al << 24);
+            }
+    }
+    panelW = std::min<int>(panelW, kOverlayW); panelH = std::min<int>(panelH, kOverlayH);
+    for (int y = 0; y < panelH; y++)   // fondo oscuro translucido detras del texto
+        for (int x = 0; x < panelW; x++)
+        {
+            uint32_t& q = g_overlayPixels[y * kOverlayW + x];
+            float ta = (q >> 24) / 255.0f, a = ta + 0.62f * (1 - ta);
+            q = (q & 0x00FFFFFF) | ((uint32_t)(a * 255) << 24);
+        }
+    g_overlayDirty = true;
+}
+// Estadisticas por presentacion; el texto se rehace cada 0,5 s
+void OverlayTick(uint64_t drawsThisFrame)
+{
+    static double lastT = 0, winStart = 0; static std::vector<double> dts; static uint64_t draws = 0; static int hitchesTotal = 0;
+    static FILETIME lastK{}, lastU{}; static double lastCpuT = 0; static double cpuPct = 0;
+    double now = QpcMs();
+    if (lastT > 0) { double dt = now - lastT; dts.push_back(dt); if (dt > 40) hitchesTotal++; }
+    lastT = now; draws += drawsThisFrame;
+    if (!winStart) winStart = now;
+    if (!g_showStats || now - winStart < 500 || dts.empty()) { if (now - winStart >= 500) { winStart = now; dts.clear(); draws = 0; } return; }
+    double fps = dts.size() * 1000.0 / (now - winStart), sum = 0, mx = 0;
+    for (double d : dts) { sum += d; mx = std::max(mx, d); }
+    std::vector<double> srt = dts; std::sort(srt.begin(), srt.end());
+    double p99 = srt[std::min(srt.size() - 1, (size_t)(srt.size() * 0.99))];
+    {   // CPU del proceso (todos los nucleos = 100%)
+        FILETIME c, e, k, u; GetProcessTimes(GetCurrentProcess(), &c, &e, &k, &u);
+        auto v = [](FILETIME f) { return (double)((uint64_t(f.dwHighDateTime) << 32) | f.dwLowDateTime) / 10000.0; };
+        if (lastCpuT > 0) { static const unsigned nc = std::max(1u, std::thread::hardware_concurrency()); cpuPct = ((v(k) - v(lastK)) + (v(u) - v(lastU))) / (now - lastCpuT) / nc * 100.0; }
+        lastK = k; lastU = u; lastCpuT = now;
+    }
+    double vramMB = -1, vramBudget = 0;
+    {
+        static ComPtr<IDXGIAdapter3> ad; static bool tried = false;
+        if (!tried) { tried = true; ComPtr<IDXGIFactory4> f; if (SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&f)))) { ComPtr<IDXGIAdapter1> a1; LUID l = g_dev->GetAdapterLuid(); if (SUCCEEDED(f->EnumAdapterByLuid(l, IID_PPV_ARGS(&a1)))) a1.As(&ad); } }
+        DXGI_QUERY_VIDEO_MEMORY_INFO mi{};
+        if (ad && SUCCEEDED(ad->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &mi))) { vramMB = mi.CurrentUsage / 1048576.0; vramBudget = mi.Budget / 1048576.0; }
+    }
+    PROCESS_MEMORY_COUNTERS pmc{}; GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc));
+    double audMs = AudioQueuedFrames() / 48.0;
+    char l1[128], l2[128], l3[128], l4[128];
+    snprintf(l1, sizeof(l1), "%3.0f FPS   %4.1f ms  (max %3.0f, 1%% %4.1f)", fps, sum / dts.size(), mx, p99);
+    snprintf(l2, sizeof(l2), "CPU %3.0f%%   draws %5.0f/frame   tirones %d", cpuPct, (double)draws / dts.size(), hitchesTotal);
+    if (vramMB >= 0) snprintf(l3, sizeof(l3), "VRAM %5.0f / %5.0f MB   RAM %5.0f MB", vramMB, vramBudget, pmc.WorkingSetSize / 1048576.0);
+    else snprintf(l3, sizeof(l3), "RAM %5.0f MB", pmc.WorkingSetSize / 1048576.0);
+    snprintf(l4, sizeof(l4), "%ux%u -> %ux%u   audio %3.0f ms", kRtW, kRtH, g_bbW, g_bbH, audMs);
+    COLORREF fc = fps >= 57 ? RGB(110, 255, 120) : fps >= 45 ? RGB(255, 220, 80) : RGB(255, 90, 80);
+    COLORREF wc = RGB(225, 225, 225);
+    OverlayRender({ { l1, fc }, { l2, wc }, { l3, wc }, { l4, wc } });
+    winStart = now; dts.clear(); draws = 0;
+}
+void OverlayDraw(UINT fi)
+{
+    if (!g_showStats || !g_overlayPso || g_overlayPixels.empty()) return;
+    if (!g_overlayTex)
+    {
+        D3D12_HEAP_PROPERTIES def{ D3D12_HEAP_TYPE_DEFAULT };
+        D3D12_RESOURCE_DESC td{}; td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; td.Width = kOverlayW; td.Height = kOverlayH; td.DepthOrArraySize = 1;
+        td.MipLevels = 1; td.Format = DXGI_FORMAT_B8G8R8A8_UNORM; td.SampleDesc.Count = 1;
+        if (FAILED(g_dev->CreateCommittedResource(&def, D3D12_HEAP_FLAG_NONE, &td, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&g_overlayTex)))) return;
+        g_overlayState = D3D12_RESOURCE_STATE_COPY_DEST;
+        g_dev->CreateShaderResourceView(g_overlayTex.Get(), nullptr, SrvCpu(kOverlaySrvSlot));
+    }
+    if (g_overlayDirty)
+    {
+        const UINT pitch = kOverlayW * 4;
+        UINT64 o = RingAlloc(UINT64(pitch) * kOverlayH, 512);
+        if (o != ~0ull)
+        {
+            memcpy(g_ringMap[fi] + o, g_overlayPixels.data(), pitch * kOverlayH);
+            if (g_overlayState != D3D12_RESOURCE_STATE_COPY_DEST) { auto b = Transition(g_overlayTex.Get(), g_overlayState, D3D12_RESOURCE_STATE_COPY_DEST); g_list->ResourceBarrier(1, &b); }
+            D3D12_TEXTURE_COPY_LOCATION dst{ g_overlayTex.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX }; dst.SubresourceIndex = 0;
+            D3D12_TEXTURE_COPY_LOCATION src{ g_ring[fi].Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT };
+            src.PlacedFootprint.Offset = o; src.PlacedFootprint.Footprint = { DXGI_FORMAT_B8G8R8A8_UNORM, kOverlayW, kOverlayH, 1, pitch };
+            g_list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+            auto b = Transition(g_overlayTex.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE); g_list->ResourceBarrier(1, &b);
+            g_overlayState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+            g_overlayDirty = false;
+        }
+    }
+    if (g_overlayState != D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE) return;
+    D3D12_VIEWPORT vp; D3D12_RECT sr; PresentViewport(vp, sr);
+    float sc = std::max(0.75f, vp.Height / 720.0f);
+    D3D12_VIEWPORT ov{ vp.TopLeftX + 12 * sc, vp.TopLeftY + 12 * sc, kOverlayW * sc, kOverlayH * sc, 0, 1 };
+    D3D12_RECT os{ (LONG)ov.TopLeftX, (LONG)ov.TopLeftY, (LONG)(ov.TopLeftX + ov.Width), (LONG)(ov.TopLeftY + ov.Height) };
+    g_list->RSSetViewports(1, &ov); g_list->RSSetScissorRects(1, &os);
+    g_list->SetPipelineState(g_overlayPso.Get());
+    g_list->SetGraphicsRootSignature(g_blitRootSig.Get());
+    ID3D12DescriptorHeap* heaps[] = { g_srvHeap.Get() };
+    g_list->SetDescriptorHeaps(1, heaps);
+    g_list->SetGraphicsRootDescriptorTable(0, SrvGpu(kOverlaySrvSlot));
+    g_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    g_list->DrawInstanced(3, 1, 0, 0);
 }
 
 void OpenFrame()
@@ -3920,6 +4074,7 @@ bool D3D12PresentResolved(HWND hwnd, uint32_t fb, std::vector<uint32_t>* readbac
     g_list->SetGraphicsRootDescriptorTable(0, SrvGpu(3 + fi));
     g_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     g_list->DrawInstanced(3, 1, 0, 0);
+    OverlayDraw(fi);   // sesion 25: contador (F3)
     auto toPresent = Transition(g_backbuffers[fi].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
     ProbedBarrier(1, &toPresent, __LINE__);
     HRESULT phr = g_list->Close();
@@ -3959,6 +4114,7 @@ bool D3D12PresentResolved(HWND hwnd, uint32_t fb, std::vector<uint32_t>* readbac
                 LOG("[framelog] %llu: %.1f ms, draws %llu (%.1f ms), present %.1f ms, espera GPU %.1f ms", (unsigned long long)hn, dt, (unsigned long long)g_frameDraws, g_hDrawMs, g_hPresentMs, g_hWaitMs);
         }
         { extern void HitchProfNotify(double, double, uint64_t); if (dt > 0) HitchProfNotify(now - dt, now, hn); }
+        OverlayTick(g_frameDraws);
         if (dt > hitchMs && hitches++ < 2000)
             LOG("[tiron] frame %llu: %.0f ms | compilar %.0f ms (%u nuevos, %u de cache) | PSO %.0f ms (%u) | texturas %.0f ms (crear %.0f ms x%u, subir %.0f ms x%u) | espera GPU %.0f ms | vaciados %.0f ms (%u)",
                 (unsigned long long)hn, dt, g_hCompileMs, g_hCompiles, g_hCacheHits, g_hPsoMs, g_hPsos, g_hTexMs, g_hTexCreateMs, g_hTexNew, g_hTexFillMs, g_hTexUp, g_hWaitMs, g_hFlushMs, g_hFlushes);
@@ -4039,6 +4195,7 @@ bool D3D12Present(HWND hwnd, const uint32_t* pixels, uint32_t w, uint32_t h)
         g_list->DrawInstanced(3, 1, 0, 0);
     }
     if (useEdram) { auto b = Transition(g_edram.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET); ProbedBarrier(1, &b, __LINE__); }
+    OverlayDraw(fi);   // sesion 25: contador (F3)
     auto toPresent = Transition(g_backbuffers[fi].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
     ProbedBarrier(1, &toPresent, __LINE__);
     HRESULT phr = g_list->Close();
