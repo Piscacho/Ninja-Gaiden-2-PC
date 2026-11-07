@@ -3785,7 +3785,8 @@ bool D3D12PresentResolved(HWND hwnd, uint32_t fb, std::vector<uint32_t>* readbac
                 if (winStart == 0) winStart = now;
                 winFrames++; if (dt > worst) worst = dt;
                 if (now - winStart >= 5000)
-                { LOG("[fps] %.1f fps (%.1f ms de media, peor %.0f ms)", winFrames * 1000.0 / (now - winStart), (now - winStart) / winFrames, worst); winStart = now; winFrames = 0; worst = 0; }
+                { LOG("[fps] %.1f fps (%.1f ms de media, peor %.0f ms)", winFrames * 1000.0 / (now - winStart), (now - winStart) / winFrames, worst); winStart = now; winFrames = 0; worst = 0;
+                  static int fpsLines = 0; if (++fpsLines % 12 == 0) { extern void GuestHeapStatsLog(); GuestHeapStatsLog(); } }   // sesion 23: memoria cada minuto
             }
         }
         {   // NG2_FRAMELOG=<desde>:<cuantos>: draws y tiempo de cada frame presentado (ritmo de la escena 3D, sesion 24)
@@ -3890,7 +3891,8 @@ bool D3D12Present(HWND hwnd, const uint32_t* pixels, uint32_t w, uint32_t h)
     static long long dumpAt = getenv("NG2_DUMPFRAME") ? atoll(getenv("NG2_DUMPFRAME")) : -1;
     ++frames;
     if ((long long)frames == dumpAt) { g_fence->SetEventOnCompletion(g_nextFence - 1, g_fenceEvent); WaitForSingleObject(g_fenceEvent, 5000); DumpEdram(frames); }
-    if (frames % 600 == 0) SavePsoLib();   // sesion 23: guarda los PSO nuevos que queden pendientes
+    if (frames % 600 == 0) SavePsoLib();
+    { static double lastMem = QpcMs(); if (QpcMs() - lastMem > 60000) { lastMem = QpcMs(); extern void GuestHeapStatsLog(); GuestHeapStatsLog(); } }   // sesion 23: cada minuto   // sesion 23: guarda los PSO nuevos que queden pendientes
     if (frames % 120 == 0) LOG("[d3d12] frame %llu: draws %llu, omitidos prim=%llu shader=%llu pso=%llu mem=%llu, shaders %zu, psos %zu, resolves %llu (frontbuffer %llu), superficies %zu",
         (unsigned long long)frames, (unsigned long long)g_frameDraws, (unsigned long long)g_skipped[0], (unsigned long long)g_skipped[1],
         (unsigned long long)g_skipped[2], (unsigned long long)g_skipped[3], g_shaders.size(), g_psos.size(), (unsigned long long)g_resolves, (unsigned long long)g_fbResolves, g_edramRts.size());

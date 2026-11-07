@@ -76,6 +76,13 @@ static bool HeapFree(GuestHeap& h, uint32_t a)
 uint32_t GuestAllocVirtual(uint32_t size, uint32_t align) { return HeapAlloc(g_heapVirt, size, align); }
 uint32_t GuestAllocPhysical(uint32_t size, uint32_t align) { return HeapAlloc(g_heapPhys, size, align); }
 uint32_t GuestAllocKernel(uint32_t size, uint32_t align) { return HeapAlloc(g_heapKern, size, align); }
+void GuestHeapStatsLog()   // sesion 23: memoria en uso por monton (se llama cada minuto desde la presentacion)
+{
+    std::lock_guard lock(g_allocMutex);
+    LOG("[mem] en uso: virtual %llu MB (tope %08X, %zu huecos), fisica %llu MB (tope %08X, %zu huecos), kernel %llu KB",
+        (unsigned long long)(g_heapVirt.liveBytes >> 20), g_heapVirt.top, g_heapVirt.free.size(), (unsigned long long)(g_heapPhys.liveBytes >> 20), g_heapPhys.top, g_heapPhys.free.size(),
+        (unsigned long long)(g_heapKern.liveBytes >> 10));
+}
 bool GuestFree(uint32_t a)
 {
     if (a >= 0xA0000000 && a < 0xC0000000) return HeapFree(g_heapPhys, a);
