@@ -78,6 +78,12 @@ uint32_t GuestAllocPhysical(uint32_t size, uint32_t align) { return HeapAlloc(g_
 uint32_t GuestAllocKernel(uint32_t size, uint32_t align) { return HeapAlloc(g_heapKern, size, align); }
 void GuestHeapStatsLog()   // sesion 23: memoria en uso por monton (se llama cada minuto desde la presentacion)
 {
+    if (getenv("NG2_EFFLOG"))   // sesion 24: bufer del paquete de efectos comun (effpk_common) que pide el juego
+    {
+        const uint8_t* p = g_base + 0xA54C6000; uint32_t nz = 0; for (uint32_t i = 0; i < 0x983000; i += 64) nz += p[i] != 0;
+        char h[80]; snprintf(h, sizeof(h), "%02X%02X%02X%02X %02X%02X%02X%02X", p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7]);
+        LOG("[eff] bufer effpk_common A54C6000: %s, %u de %u muestras no nulas", h, nz, 0x983000u / 64);
+    }
     std::lock_guard lock(g_allocMutex);
     LOG("[mem] en uso: virtual %llu MB (tope %08X, %zu huecos), fisica %llu MB (tope %08X, %zu huecos), kernel %llu KB",
         (unsigned long long)(g_heapVirt.liveBytes >> 20), g_heapVirt.top, g_heapVirt.free.size(), (unsigned long long)(g_heapPhys.liveBytes >> 20), g_heapPhys.top, g_heapPhys.free.size(),

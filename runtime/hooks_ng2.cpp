@@ -224,3 +224,43 @@ NG2_TYPEWALK_HOOK(838026D8)
 NG2_TYPEWALK_HOOK(838029C8)
 NG2_TYPEWALK_HOOK(83803220)
 NG2_TYPEWALK_HOOK(83869370)
+
+// Sesion 24 (diagnostico, NG2_EFFLOG=1): sub_8365D730 resuelve nombres -> indice en la tabla fija de 5099 nombres (0x83AEBC98)
+// para 4 listas de registros de 12 bytes (punteros en 0x83A97120). Registra cuantos registros quedan resueltos.
+PPC_FUNC_IMPL(__imp__sub_8365D730);
+PPC_FUNC(sub_8365D730)
+{
+    __imp__sub_8365D730(ctx, base);
+    static const bool on = getenv("NG2_EFFLOG") != nullptr;
+    if (!on) return;
+    auto str = [](uint32_t a) { std::string s; for (int i = 0; a && i < 80; i++) { char c = (char)g_base[a + i]; if (!c) break; s += c; } return s; };
+    for (int l = 0; l < 4; l++)
+    {
+        uint32_t lst = Load32(0x83A97120 + l * 4); int n = 0, ok = 0; std::string ej;
+        for (uint32_t r = lst; r && Load32(r) && n < 4000; r += 12, n++)
+        {
+            uint32_t idx = Load32(r + 4);
+            if (idx < 5099 && str(Load32(0x83AEBC98 + idx * 4)) == str(Load32(r))) ok++;
+            else if (ej.size() < 300) { char b[160]; snprintf(b, sizeof(b), " [%s -> %u]", str(Load32(r)).c_str(), idx); ej += b; }
+        }
+        LOG("[eff] lista %d @%08X: %d registros, %d resueltos;%s", l, lst, n, ok, ej.c_str());
+    }
+}
+// Sesion 24 (diagnostico, NG2_EFFLOG=1): carga del paquete de efectos comun (indice 4791 = effect\effpk_common\effpk_common.emc).
+// 0x82443498: si !sub_822FF5A8(4791, obj+0x134) -> sub_823D6F00(4791, *(obj+0x134), r5)
+PPC_FUNC_IMPL(__imp__sub_822FF5A8);
+PPC_FUNC(sub_822FF5A8)
+{
+    static const bool on = getenv("NG2_EFFLOG") != nullptr; static std::atomic<int> n{ 0 };
+    uint32_t a3 = ctx.r3.u32, a4 = ctx.r4.u32;
+    __imp__sub_822FF5A8(ctx, base);
+    if (on && a3 >= 4700 && a3 < 5099 && n.fetch_add(1) < 60) LOG("[eff] sub_822FF5A8(%u, %08X [%08X]) -> %llX", a3, a4, a4 ? Load32(a4) : 0, (unsigned long long)ctx.r3.u64);
+}
+PPC_FUNC_IMPL(__imp__sub_823D6F00);
+PPC_FUNC(sub_823D6F00)
+{
+    static const bool on = getenv("NG2_EFFLOG") != nullptr; static std::atomic<int> n{ 0 };
+    uint32_t a3 = ctx.r3.u32, a4 = ctx.r4.u32, a5 = ctx.r5.u32;
+    __imp__sub_823D6F00(ctx, base);
+    if (on && n.fetch_add(1) < 60) LOG("[eff] sub_823D6F00(%u, %08X, %08X) -> %llX", a3, a4, a5, (unsigned long long)ctx.r3.u64);
+}

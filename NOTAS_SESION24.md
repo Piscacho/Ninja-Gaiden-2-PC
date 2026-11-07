@@ -26,3 +26,32 @@ El sistema de efectos/partículas del juego no genera partículas (fallo del lad
 1. Localizar el gestor de efectos (cadenas `effect\effpk_*`, carga de los paquetes de efectos) y ver si las partículas se crean.
 2. Mirar si se queda sin un recurso (tiempo, aleatorio, memoria de un pool propio, un hilo que no arranca) o si una instrucción
    mal traducida deja tamaño/alfa a 0.
+
+## Segunda parte (sin Xenia: había otra sesión con Guitar Hero abierto)
+
+Descartado además:
+- Reloj `mftb`: devuelve 50 MHz como la consola (`atomics.cpp`).
+- Las 24 instrucciones VMX/CR añadidas en la sesión 2 (`tools/patch_recompiler_ng2.py`): revisadas una a una (orden de
+  elementos en los empaquetados, operandos de restas y comparaciones, saturaciones): correctas. Las recompilaciones recientes no
+  tienen instrucciones sin reconocer.
+- Predicado de los paquetes PM4: se ignora (se ejecutan todos); vallas/escrituras de la GPU (`EVENT_WRITE_SHD`, `MEM_WRITE`,
+  `REG_TO_MEM`) como en Xenia.
+- Consultas de oclusión: con `NG2_ZPDSAMPLES=100000` tampoco aparece la sangre.
+- Shaders: ninguno falla al traducirse ni usa memexport; ningún ajuste de XConfig desconocido; privilegios = permitido.
+- Resolución de nombres de recursos (`sub_8365D730`, tabla fija de 5099 nombres en 0x83AEBC98): todo resuelto salvo
+  `mission.tdp` (Mission Mode).
+
+Encontrado:
+- La tabla de rutas de efectos está en 0x83AF0774 (308 entradas, dentro de la de 5099 nombres); `effpk_common` = índice 4791.
+- Se carga en `0x82443498`: `sub_822FF5A8(4791, 0x83BBC1C4)` (¿ya cargado?) y si no, `sub_823D6F00(4791, 0xA54C6000,
+  0xA5E49000)` (petición 0x1B). **El paquete llega**: el búfer empieza por `GMD\0` y tiene datos (`NG2_EFFLOG=1`).
+- Algunos efectos sí se ven (pétalos de cerezo); faltan los de golpes y muertes (sangre, almas) y el agua.
+- En combate nadie lee la cabecera del paquete común ni el puntero `0x83BBC1C4` (solo durante la carga).
+
+Siguiente (con Xenia y sin otra ventana delante):
+1. Llevar Xenia al primer combate con `--dump_shaders` y comparar con los nuestros: los shaders que solo use Xenia serán los de los
+   efectos que faltan, y con su hash se puede buscar quién los dibuja.
+2. Ver si los pétalos salen del mismo sistema de efectos (si sí, el fallo está en el disparo de los efectos por golpes).
+
+Diagnósticos nuevos: `NG2_EFFLOG=1` (ganchos en `sub_8365D730`, `sub_822FF5A8`, `sub_823D6F00` y estado del búfer cada minuto),
+`tools/xref.py` (código que construye una dirección con `lis`+`addi`).
