@@ -23,7 +23,7 @@ target_compile_options(NG2RecompLib PRIVATE /O1 -fno-strict-aliasing -msse4.1 -W
 set(FFMPEG "G:/Guitar Hero Warrior of rock/Recomp/toolchain/ffmpeg")
 set(RT ${RECOMP_ROOT}/runtime)
 add_executable(NG2 ${RT}/main.cpp ${RT}/kernel.cpp ${RT}/kernel_ng2.cpp ${RT}/hooks_ng2.cpp ${RT}/fibers_ng2.cpp ${RT}/import_stubs.cpp ${RT}/threads.cpp ${RT}/fs.cpp ${RT}/gpu_stub.cpp ${RT}/diag.cpp
-    ${RT}/gpu_cp.cpp ${RT}/gpu_window.cpp ${RT}/atomics.cpp ${RT}/xam.cpp ${RT}/audio_wasapi.cpp ${RT}/launcher.cpp ${RT}/launcher_ui.cpp ${RT}/dualsense.cpp
+    ${RT}/gpu_cp.cpp ${RT}/gpu_window.cpp ${RT}/atomics.cpp ${RT}/xam.cpp ${RT}/audio_wasapi.cpp ${RT}/launcher.cpp ${RT}/launcher_ui.cpp ${RT}/xexp_patch.cpp ${RT}/dualsense.cpp
     ${RT}/gpu_d3d12.cpp ${RT}/gpu_shader.cpp ${RT}/gpu_shadertest.cpp ${RT}/xma.cpp)
 target_include_directories(NG2 PRIVATE ${RT} ${FFMPEG}/include)
 target_compile_options(NG2 PRIVATE /O2 -fno-strict-aliasing -msse4.1 -Wno-unused-parameter /Z7)

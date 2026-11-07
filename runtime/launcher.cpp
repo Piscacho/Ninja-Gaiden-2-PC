@@ -109,6 +109,7 @@ LauncherConfig LoadConfig()
             else if (k == "pantalla_completa") _putenv_s("NG2_FULLSCREEN", v == "1" ? "1" : "0");
             else if (k == "ventana" && !v.empty()) _putenv_s("NG2_WINSIZE", v.c_str());
             else if (k == "panoramico" && !v.empty()) _putenv_s("NG2_PANO", v.c_str());
+            else if (k == "actualizacion") { if (v == "0") _putenv_s("NG2_NOTU", "1"); }   // sesion 26: usar la TU si esta
             else if (k.rfind("NG2_", 0) == 0 && !v.empty()) _putenv_s(k.c_str(), v.c_str());
         }
         fclose(f);
@@ -252,3 +253,20 @@ void ScanDlcDir(const std::string& dir, const std::string& contentDir, int depth
 }
 } // namespace
 void ImportDlc(const LauncherConfig& c) { ScanDlcDir(c.dlcDir, c.dataDir + "\\content", 0); }
+
+// Sesion 26: ruta de default.xexp de la actualizacion del titulo importada (datos\content\000b0000_*\default.xexp), o vacia
+std::string FindTitleUpdate(const std::string& dataDir)
+{
+    std::string content = dataDir + "\\content";
+    WIN32_FIND_DATAA fd; HANDLE h = FindFirstFileA((content + "\\000b0000_*").c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return "";
+    std::string found;
+    do
+    {
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+        std::string x = content + "\\" + fd.cFileName + "\\default.xexp";
+        if (GetFileAttributesA(x.c_str()) != INVALID_FILE_ATTRIBUTES) { found = x; break; }
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+    return found;
+}

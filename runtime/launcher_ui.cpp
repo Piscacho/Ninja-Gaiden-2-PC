@@ -32,6 +32,7 @@
 #pragma comment(linker, "/manifestdependency:\"type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 
 bool PsPadGetState(uint16_t& buttons, uint8_t& lt, uint8_t& rt, int16_t sticks[4]);   // dualsense.cpp
+std::string FindTitleUpdate(const std::string& dataDir);   // launcher.cpp (sesion 26)
 
 namespace
 {
@@ -99,7 +100,7 @@ const COLORREF kBg = RGB(9, 9, 11), kScan = RGB(14, 14, 17), kSide = RGB(7, 7, 9
 enum
 {
     ID_TAB0 = 100, ID_PLAY = 200, ID_SAVE, ID_SHOWLAUNCHER, ID_SAVED,
-    ID_ISO = 300, ID_ISO_BROWSE, ID_DLC, ID_DLC_BROWSE, ID_DLCCOUNT, ID_SKIPINTRO, ID_PROFILE, ID_SAVEINFO, ID_SAVEOPEN,
+    ID_ISO = 300, ID_ISO_BROWSE, ID_DLC, ID_DLC_BROWSE, ID_DLCCOUNT, ID_SKIPINTRO, ID_PROFILE, ID_SAVEINFO, ID_SAVEOPEN, ID_TU, ID_TUINFO,
     ID_FULLSCREEN = 400, ID_WINSIZE, ID_SCALE, ID_VSYNC, ID_MBLUR, ID_GRAIN, ID_AUDIOLAT, ID_ANISO, ID_FPS, ID_PANO,
     ID_VIBRA = 500, ID_PADSTATUS, ID_KEYS,
     ID_SEC0 = 900, ID_BANNER = 990,
@@ -450,6 +451,17 @@ void PaintMain(HDC dc0)
     SelectObject(dc, ob); DeleteObject(bm); DeleteDC(dc);
 }
 void UpdateHome();
+std::string DataDirL();
+// Sesion 26: estado de la actualizacion del titulo (importada desde la carpeta de DLC al arrancar)
+void UpdateTuInfo()
+{
+    std::string tu = FindTitleUpdate(DataDirL());
+    bool exe = GetFileAttributesA((ExeDirL() + "\\NG2TU.exe").c_str()) != INVALID_FILE_ATTRIBUTES;
+    const wchar_t* t = !tu.empty() ? (exe ? L"Instalada: se usa al jugar (menú MISSIONS). Desactívala para jugar la versión del disco."
+                                         : L"Instalada, pero falta NG2TU.exe junto al juego.")
+                                   : L"No instalada: copia su paquete (archivo TU_... de tu consola) en la carpeta de DLC y pulsa JUGAR.";
+    SetWindowTextW(Item(ID_TUINFO), t);
+}
 void UpdatePads();
 void ShowTab(int t)
 {
@@ -558,7 +570,8 @@ void BuildUi()
         Edit(0, W(ini.Get("dlc", "dlc")), kX0, y, kXR - kX0 - 140, ID_DLC);
         Button(0, L"Examinar...", kXR - 130, y, 130, 30, ID_DLC_BROWSE); y += 42;
         Row(0, y, L"Saltar el vídeo de logos al arrancar", L"Entra directo a la pantalla de título."); ToggleRight(0, y, ID_SKIPINTRO, flag("saltar_intro", false)); y += 42;
-        Row(0, y, L"Guardar partidas", L"Con perfil el juego guarda la partida y los ajustes; sin perfil no se guarda nada."); ToggleRight(0, y, ID_PROFILE, flag("perfil", true)); y += 46;
+        Row(0, y, L"Guardar partidas", L"Con perfil el juego guarda la partida y los ajustes; sin perfil no se guarda nada."); ToggleRight(0, y, ID_PROFILE, flag("perfil", true)); y += 42;
+        Row(0, y, L"Actualización del título #2 (Mission Mode)", nullptr, 620, ID_TUINFO); ToggleRight(0, y, ID_TU, flag("actualizacion", true)); y += 46;
         y = Section(0, y, L"PARTIDAS");
         Label(0, L"", kX0, y, kXR - kX0, 20, ID_SAVEINFO, true, g.fontSmall); y += 26;
         Button(0, L"Abrir carpeta", kX0, y, 160, 32, ID_SAVEOPEN); y += 48;
@@ -616,7 +629,9 @@ void BuildUi()
         const wchar_t* help =
             L"• Necesitas tu propio ISO de Ninja Gaiden II para Xbox 360 (versión World). Este paquete no incluye archivos del juego.\n\n"
             L"• DLC: copia tus paquetes de Xbox 360 (archivos LIVE/CON) en la carpeta de DLC. Funcionan los trajes Biometal, Fiend y "
-            L"Shadow Walker Hayabusa. Mission Mode necesita la actualización del título y no está soportado.\n\n"
+            L"Shadow Walker Hayabusa.\n\n"
+            L"• Mission Mode: copia también en la carpeta de DLC el paquete de la actualización del título #2 (archivo TU_... de tu "
+            L"consola) junto con el DLC de Mission Mode. Aparece la opción MISSIONS en el menú principal.\n\n"
             L"• En el juego: F11 o Alt+Intro pantalla completa, F3 contador de FPS, F12 captura de pantalla (shot_9xx.bmp).\n\n"
             L"• Las cinemáticas van a 30 fps como en la consola; el juego, a 60.\n\n"
             L"• Si algo falla, el registro de la última partida está en ng2.log junto al ejecutable.\n\n"
@@ -669,6 +684,7 @@ bool Collect(bool requireIso)
     ini.Set("dlc", A(GetText(Item(ID_DLC))));
     ini.Set("saltar_intro", Toggled(ID_SKIPINTRO) ? "1" : "0");
     ini.Set("perfil", Toggled(ID_PROFILE) ? "1" : "0");
+    ini.Set("actualizacion", Toggled(ID_TU) ? "1" : "0");
     ini.Set("mostrar_launcher", Toggled(ID_SHOWLAUNCHER) ? "1" : "0");
     ini.Set("pantalla_completa", Toggled(ID_FULLSCREEN) ? "1" : "0");
     ini.Set("ventana", kWinSizesIni[std::clamp(Sel(ID_WINSIZE), 0, kNumWinSizes - 1)]);
@@ -793,7 +809,7 @@ bool RunLauncherUI()
     DwmSetWindowAttribute(g.wnd, 35 /* DWMWA_CAPTION_COLOR */, &caption, sizeof(caption));
     DwmSetWindowAttribute(g.wnd, 34 /* DWMWA_BORDER_COLOR */, &border, sizeof(border));
     BuildUi();
-    UpdateDlcCount(); UpdateSaveInfo();
+    UpdateDlcCount(); UpdateSaveInfo(); UpdateTuInfo();
     ShowTab(g.tab);
     ShowWindow(g.wnd, SW_SHOW); UpdateWindow(g.wnd);
     SetTimer(g.wnd, 1, 33, nullptr);

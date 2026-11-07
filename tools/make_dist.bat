@@ -9,6 +9,8 @@ if not exist "%DIST%" mkdir "%DIST%"
 if not exist "%DIST%\dlc" mkdir "%DIST%\dlc"
 if not exist "%DIST%\licenses" mkdir "%DIST%\licenses"
 copy /y "%R%\project\build\NG2.exe" "%DIST%\NG2.exe" >nul || (echo Falta project\build\NG2.exe & exit /b 1)
+rem sesion 26: version con la actualizacion del titulo #2 (Mission Mode); NG2.exe le cede el paso si la TU esta instalada
+if exist "%R%\project\build_tu\NG2TU.exe" copy /y "%R%\project\build_tu\NG2TU.exe" "%DIST%\NG2TU.exe" >nul
 copy /y "%R%\project\build\avcodec-62.dll" "%DIST%" >nul
 copy /y "%R%\project\build\avutil-60.dll" "%DIST%" >nul
 copy /y "%R%\project\build\swresample-6.dll" "%DIST%" >nul

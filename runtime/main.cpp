@@ -19,6 +19,9 @@ bool EnsureIso(LauncherConfig& c);
 void ImportDlc(const LauncherConfig& c);
 bool LauncherWanted(int argc, char** argv);   // launcher_ui.cpp (sesion 25)
 bool RunLauncherUI();
+bool XexpApply(const std::vector<uint8_t>& baseXex, const std::vector<uint8_t>& baseImage, const std::vector<uint8_t>& xexp,
+               std::vector<uint8_t>& newHdr, std::vector<uint8_t>& newImage, std::string& err);   // xexp_patch.cpp (sesion 26)
+std::string FindTitleUpdate(const std::string& dataDir);   // launcher.cpp (sesion 26)
 bool XexToImage(const std::vector<uint8_t>& xex, std::vector<uint8_t>& img);
 std::vector<uint8_t> FsReadIsoFile(const char* path);
 
@@ -131,13 +134,49 @@ int main(int argc, char** argv)
             MessageBoxA(nullptr, "No se pudo abrir el ISO. Comprueba que es el de Ninja Gaiden II (Xbox 360).", "Ninja Gaiden II", MB_ICONERROR);
             cfg.iso.clear(); SaveConfig(cfg); return 1;
         }
+        ImportDlc(cfg);   // sesion 26: antes de leer el XEX (la actualizacion del titulo se importa desde la carpeta dlc)
         xex = FsReadIsoFile("default.xex");
         if (xex.empty() || !XexToImage(xex, image))
         {
             MessageBoxA(nullptr, "No se pudo leer o descifrar default.xex del ISO.", "Ninja Gaiden II", MB_ICONERROR);
             return 1;
         }
-        ImportDlc(cfg);
+        // Sesion 26: actualizacion del titulo #2 (Mission Mode). Su paquete (LIVE, tipo 000B0000) se importa como el DLC y deja
+        // datos\content\000b0000_*\default.xexp. NG2TU.exe la aplica en memoria; NG2.exe le cede el paso si esta instalada.
+        std::string tuPath = FindTitleUpdate(cfg.dataDir);
+#ifdef NG2_TU
+        if (tuPath.empty())
+        {
+            MessageBoxA(nullptr, "Esta version necesita la actualizacion del titulo #2 de Ninja Gaiden II.\n\n"
+                                 "Copia su paquete (archivo TU_... de tu consola) en la carpeta dlc y vuelve a abrir el juego.", "Ninja Gaiden II", MB_ICONINFORMATION);
+            return 1;
+        }
+        {
+            std::vector<uint8_t> xp = ReadFile(tuPath.c_str()), nh, ni; std::string err;
+            if (!XexpApply(xex, image, xp, nh, ni, err))
+            {
+                MessageBoxA(nullptr, ("No se pudo aplicar la actualizacion del titulo: " + err).c_str(), "Ninja Gaiden II", MB_ICONERROR);
+                return 1;
+            }
+            xex.swap(nh); image.swap(ni);
+        }
+#else
+        if (!tuPath.empty() && !getenv("NG2_NOTU"))
+        {
+            std::string tuExe = dir + "\\NG2TU.exe";
+            if (GetFileAttributesA(tuExe.c_str()) != INVALID_FILE_ATTRIBUTES)
+            {
+                LOG("[tu] actualizacion del titulo instalada: se abre NG2TU.exe");
+                fflush(stderr); freopen("NUL", "w", stderr);   // NG2TU.exe escribe su propio ng2.log
+                STARTUPINFOA si{ sizeof(si) }; PROCESS_INFORMATION pi{};
+                std::string cmd = "\"" + tuExe + "\" --jugar";
+                if (CreateProcessA(tuExe.c_str(), cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, dir.c_str(), &si, &pi))
+                { CloseHandle(pi.hThread); CloseHandle(pi.hProcess); return 0; }
+                freopen((dir + "\\ng2.log").c_str(), "a", stderr);
+                LOG("[tu] no se pudo abrir NG2TU.exe (%lu): se sigue sin la actualizacion", GetLastError());
+            }
+        }
+#endif
     }
     // NG2: la imagen descifrada (0x3A78000) es algo menor que la declarada (0x3A80000); el resto queda a cero
     if (image.size() > PPC_IMAGE_SIZE || image.size() + 0x10000 < PPC_IMAGE_SIZE)

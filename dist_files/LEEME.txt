@@ -10,8 +10,11 @@ Primer arranque
 2. La ruta se guarda en ng2.ini. Las partidas se guardan en la carpeta "userdata".
 3. DLC: copia tus paquetes de Xbox 360 (archivos LIVE/CON) en la carpeta "dlc".
    Se importan solos al arrancar. Funcionan los trajes Biometal, Fiend y
-   Shadow Walker Hayabusa. Mission Mode necesita la actualizacion del titulo,
-   que no esta soportada.
+   Shadow Walker Hayabusa.
+4. Mission Mode: copia tambien en "dlc" el paquete de la actualizacion del titulo
+   #2 (archivo TU_1A461UL_... de tu consola) y el DLC de Mission Mode. NG2.exe abre
+   entonces NG2TU.exe, que aplica la actualizacion al arrancar, y aparece MISSIONS
+   en el menu principal. Se puede desactivar en el launcher (pagina JUEGO).
 
 Controles
 ---------
@@ -42,5 +45,4 @@ Problemas conocidos
 -------------------
 - La primera vez que aparece cada efecto puede faltar un instante mientras se
   compila su shader (luego queda en "shadercache" y ya no pasa).
-- Mission Mode no funciona (necesita la actualizacion del titulo).
 - El registro de la ultima partida esta en ng2.log (util para informar de fallos).

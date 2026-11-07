@@ -86,3 +86,16 @@ tipo 000B0000, «Ninja Gaiden 2 Title Update #2», título 544307D5, media ID 69
 1. Modo usuario: que el launcher aplique la TU por su cuenta (portar `lzxdelta.cpp` y la lógica de claves de
    `xexp_records.py` a C++) a partir del ISO + `default.xexp` del usuario, y elegir NG2TU.exe cuando esté la TU; distribución.
 2. Probar más misiones y el modo historia completo con la TU (guardado, DLC de trajes, efectos, audio, panorámico).
+
+## Cuarta parte: la actualización en modo usuario y en la distribución
+
+- `runtime/xexp_patch.cpp` (`XexpApply`): lo mismo que `lzxdelta.cpp` + `xexp_records.py`, en C++ con BCrypt (AES y SHA-1 de
+  cada bloque). Comprueba la versión del disco (0x4) y la clave (`image_key_source`).
+- Arranque (`main.cpp`, modo usuario): `ImportDlc` va ahora antes de leer el XEX. El paquete de la TU se deja en `dlc/` como el
+  DLC y se importa a `datos\content\000b0000_*\default.xexp` (`FindTitleUpdate`, `launcher.cpp`).
+  - `NG2TU.exe`: aplica la TU en memoria al `default.xex` del ISO (~1 s) y sigue; sin TU avisa y sale.
+  - `NG2.exe`: si la TU está instalada, `actualizacion=1` (por defecto; `NG2_NOTU=1` la ignora) y `NG2TU.exe` está al lado,
+    abre `NG2TU.exe --jugar` y termina (su ng2.log lo escribe NG2TU.exe).
+- Launcher: página Juego, «Actualización del título #2 (Mission Mode)» con su estado. LEEME con las instrucciones.
+- `make_dist.bat` copia `NG2TU.exe`. Prueba desde una carpeta nueva con los 4 DLC y la TU originales en `dlc/`: importa todo,
+  aplica la TU (36 bloques, 1109 registros) y entra en una misión.
