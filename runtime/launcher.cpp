@@ -99,6 +99,16 @@ LauncherConfig LoadConfig()
             else if (k == "vibracion") { if (v == "0") _putenv_s("NG2_NOVIBRACION", "1"); }
             else if (k == "anisotropico" && !v.empty()) _putenv_s("NG2_ANISO", v.c_str());   // sesion 23
             else if (k == "mostrar_fps") _putenv_s("NG2_FPS", v == "1" ? "1" : "0");   // sesion 25: contador en pantalla (F3)
+            // Sesion 25: opciones del launcher
+            else if (k == "saltar_intro") _putenv_s("NG2_SKIPINTRO", v == "1" ? "1" : "0");
+            else if (k == "grano_pelicula") _putenv_s("NG2_NOGRAIN", v == "1" ? "0" : "1");
+            else if (k == "desenfoque_movimiento") { if (v == "0") _putenv_s("NG2_NOMOTIONBLUR", "1"); }
+            else if (k == "vsync") _putenv_s("NG2_VSYNC", v == "0" ? "0" : "1");
+            else if (k == "escalado") { if (v == "bilineal") _putenv_s("NG2_UPSCALE", "bilineal"); }
+            else if (k == "latencia_audio") _putenv_s("NG2_AUDIOMS", v == "baja" ? "25" : v == "segura" ? "80" : "40");
+            else if (k == "pantalla_completa") _putenv_s("NG2_FULLSCREEN", v == "1" ? "1" : "0");
+            else if (k == "ventana" && !v.empty()) _putenv_s("NG2_WINSIZE", v.c_str());
+            else if (k == "panoramico" && !v.empty()) _putenv_s("NG2_PANO", v.c_str());
             else if (k.rfind("NG2_", 0) == 0 && !v.empty()) _putenv_s(k.c_str(), v.c_str());
         }
         fclose(f);
@@ -106,21 +116,13 @@ LauncherConfig LoadConfig()
     return c;
 }
 void SaveConfig(const LauncherConfig& c)
-{
-    if (FILE* f = fopen(IniPath().c_str(), "w"))
-    {
-        const char* si = getenv("NG2_SIGNIN");
-        fprintf(f, "; Ninja Gaiden II (recompilado para PC)\n"
-                   "; iso: ruta al ISO del juego (Xbox 360, version World)\niso=%s\n"
-                   "; datos: carpeta de partidas guardadas y DLC importado\ndatos=%s\n"
-                   "; dlc: carpeta donde copiar los paquetes de DLC de Xbox 360 (se importan al arrancar)\ndlc=%s\n"
-                   "; perfil: 1 = con perfil (se puede guardar), 0 = sin perfil (no se guarda)\nperfil=%s\n"
-                   "; vibracion: 1 = el mando vibra, 0 = sin vibracion\nvibracion=%s\n"
-                   "; anisotropico: filtrado de texturas (0 = lineal, 2, 4, 8 o 16)\nanisotropico=%s\n",
-                c.iso.c_str(), c.dataDir.c_str(), c.dlcDir.c_str(), (si && atoi(si) == 0) ? "0" : "1", getenv("NG2_NOVIBRACION") ? "0" : "1",
-                getenv("NG2_ANISO") ? getenv("NG2_ANISO") : "16");
-        fclose(f);
-    }
+{   // Sesion 25: solo cambia iso/datos/dlc y conserva el resto (comentarios y opciones del launcher)
+    std::vector<std::string> lines; bool has[3] = {};
+    if (FILE* f = fopen(IniPath().c_str(), "r")) { char b[2048]; while (fgets(b, sizeof(b), f)) { std::string s = b; while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back(); lines.push_back(s); } fclose(f); }
+    const char* keys[3] = { "iso", "datos", "dlc" }; const std::string* vals[3] = { &c.iso, &c.dataDir, &c.dlcDir };
+    for (auto& l : lines) for (int k = 0; k < 3; k++) if (l.rfind(std::string(keys[k]) + "=", 0) == 0) { l = std::string(keys[k]) + "=" + *vals[k]; has[k] = true; }
+    for (int k = 0; k < 3; k++) if (!has[k]) lines.push_back(std::string(keys[k]) + "=" + *vals[k]);
+    if (FILE* f = fopen(IniPath().c_str(), "w")) { for (auto& l : lines) fprintf(f, "%s\n", l.c_str()); fclose(f); }
 }
 // Pide el ISO con el dialogo de Windows si no esta configurado o no existe
 bool EnsureIso(LauncherConfig& c)

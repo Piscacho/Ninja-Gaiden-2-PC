@@ -32,3 +32,7 @@ logs/
 *.zip
 *.old
 __pycache__/
+
+# imagenes del launcher (SteamGridDB, de terceros)
+dist_files/portada.png
+dist_files/logo.png

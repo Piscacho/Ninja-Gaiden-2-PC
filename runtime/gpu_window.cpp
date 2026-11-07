@@ -9,6 +9,8 @@
 #include <vector>
 #include <string>
 #include <atomic>
+#include <algorithm>
+#include <cstdlib>
 extern std::atomic<bool> g_showStats;   // gpu_d3d12.cpp: contador en pantalla (F3, sesion 25)
 bool D3D12Present(HWND hwnd, const uint32_t* pixels, uint32_t w, uint32_t h);
 bool D3D12PresentResolved(HWND hwnd, uint32_t fb, std::vector<uint32_t>* readback, uint32_t& outW, uint32_t& outH);
@@ -125,9 +127,16 @@ void GpuStartWindow()
         WNDCLASSW wc{}; wc.lpfnWndProc = WndProc; wc.hInstance = GetModuleHandleW(nullptr); wc.lpszClassName = L"NG2Recomp";
         wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
         RegisterClassW(&wc);
-        RECT r{ 0, 0, 1280, 720 }; AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
+        // Sesion 25: tamano de la ventana (ventana=WxH en ng2.ini -> NG2_WINSIZE), centrada y recortada al area de trabajo,
+        // y pantalla completa al arrancar (pantalla_completa=1 -> NG2_FULLSCREEN)
+        int cw = 1280, ch = 720;
+        if (const char* ws = getenv("NG2_WINSIZE")) { int a = 0, b = 0; if (sscanf(ws, "%dx%d", &a, &b) == 2 && a >= 320 && b >= 180) { cw = a; ch = b; } }
+        RECT wa{}; SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
+        RECT r{ 0, 0, cw, ch }; AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
+        int ww = std::min<int>(r.right - r.left, wa.right - wa.left), wh = std::min<int>(r.bottom - r.top, wa.bottom - wa.top);
         g_hwnd = CreateWindowW(L"NG2Recomp", L"Ninja Gaiden II (recompilado)", WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-                               CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left, r.bottom - r.top, nullptr, nullptr, wc.hInstance, nullptr);
+                               wa.left + (wa.right - wa.left - ww) / 2, wa.top + (wa.bottom - wa.top - wh) / 2, ww, wh, nullptr, nullptr, wc.hInstance, nullptr);
+        if (getenv("NG2_FULLSCREEN") && atoi(getenv("NG2_FULLSCREEN")) != 0) PostMessageW(g_hwnd, WM_KEYDOWN, VK_F11, 0);
         MSG msg;
         while (GetMessageW(&msg, nullptr, 0, 0)) { TranslateMessage(&msg); DispatchMessageW(&msg); }
     }).detach();

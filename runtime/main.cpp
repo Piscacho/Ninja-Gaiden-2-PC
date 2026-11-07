@@ -17,6 +17,8 @@ LauncherConfig LoadConfig();
 void SaveConfig(const LauncherConfig& c);
 bool EnsureIso(LauncherConfig& c);
 void ImportDlc(const LauncherConfig& c);
+bool LauncherWanted(int argc, char** argv);   // launcher_ui.cpp (sesion 25)
+bool RunLauncherUI();
 bool XexToImage(const std::vector<uint8_t>& xex, std::vector<uint8_t>& img);
 std::vector<uint8_t> FsReadIsoFile(const char* path);
 
@@ -120,6 +122,7 @@ int main(int argc, char** argv)
         std::string dir = exe; dir = dir.substr(0, dir.find_last_of("\\/"));
         SetCurrentDirectoryA(dir.c_str());
         if (!getenv("NG2_STDERR")) freopen((dir + "\\ng2.log").c_str(), "w", stderr);
+        if (LauncherWanted(argc, argv) && !RunLauncherUI()) return 0;   // sesion 25: launcher (JUGAR guarda ng2.ini)
         LauncherConfig cfg = LoadConfig();
         if (!EnsureIso(cfg)) return 1;
         isoPath = cfg.iso; dataDir = cfg.dataDir;

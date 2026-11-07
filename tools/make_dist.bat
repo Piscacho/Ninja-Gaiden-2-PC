@@ -13,6 +13,9 @@ copy /y "%R%\project\build\avcodec-62.dll" "%DIST%" >nul
 copy /y "%R%\project\build\avutil-60.dll" "%DIST%" >nul
 copy /y "%R%\project\build\swresample-6.dll" "%DIST%" >nul
 copy /y "%R%\dist_files\LEEME.txt" "%DIST%" >nul
+rem sesion 25: imagenes del launcher (SteamGridDB)
+if exist "%R%\dist_files\portada.png" copy /y "%R%\dist_files\portada.png" "%DIST%" >nul
+if exist "%R%\dist_files\logo.png" copy /y "%R%\dist_files\logo.png" "%DIST%" >nul
 set GHTC=G:\Guitar Hero Warrior of rock\Recomp\toolchain
 if exist "%GHTC%\ffmpeg\LICENSE.txt" copy /y "%GHTC%\ffmpeg\LICENSE.txt" "%DIST%\licenses\FFmpeg-LGPL-3.0.txt" >nul
 if exist "%R%\XenonRecomp\LICENSE.md" copy /y "%R%\XenonRecomp\LICENSE.md" "%DIST%\licenses\XenonRecomp-MIT.txt" >nul
