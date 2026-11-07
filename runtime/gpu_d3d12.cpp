@@ -1832,6 +1832,11 @@ EdramRt* GetEdramRt(uint32_t infoReg = 0x2001)   // RB_COLOR_INFO; MRT: RB_COLOR
     { uint32_t sx, sy; MsaaScale(sx, sy); pitch *= sx; }
     static bool only8888 = getenv("NG2_RT8888") != nullptr;   // diagnostico: comportamiento anterior
     if (only8888) xfmt = 0;
+    // Sesion 25: 2_10_10_10_FLOAT_AS_16_16_16_16 (12) y 2_10_10_10_AS_10_10_10_10 (10) son los mismos datos de EDRAM que 3 y 2
+    // (solo cambia la precision de la mezcla). El juego dibuja la escena en formato 3 y luego los efectos (sangre, chispas, agua...)
+    // en formato 12 sobre la misma base: con superficies separadas los efectos nunca llegaban a la pantalla. NG2_SPLITAS16=1 = antes.
+    static const bool splitAs16 = getenv("NG2_SPLITAS16") != nullptr;
+    if (!splitAs16) { if (xfmt == 12) xfmt = 3; else if (xfmt == 10) xfmt = 2; }
     DXGI_FORMAT f; UINT bpp; float scale;
     EdramFormat(xfmt, f, bpp, scale);
     if (f == DXGI_FORMAT_B8G8R8A8_UNORM) xfmt = 0;   // 8888 y 8888_GAMMA comparten superficie
@@ -2929,6 +2934,18 @@ void D3D12Draw(const XenosDraw& d)
             static uint32_t rlo = 0, rhi = 0; static bool rinit = false;
             if (!rinit) { rinit = true; if (const char* e = getenv("NG2_VBRANGE")) { char* q; rlo = (uint32_t)strtoul(e, &q, 16); if (*q == ':') rhi = (uint32_t)strtoul(q + 1, nullptr, 16); } }
             static std::atomic<int> rlog{ 0 };
+            // resumen cada 600 frames: draws por (VS,PS) con vertices en el rango (sin limite)
+            static std::map<std::pair<uint64_t, uint64_t>, uint32_t> rsum; static uint64_t rlast = 0;
+            if (rhi)
+            {
+                for (uint32_t slot = 88; slot < 96; slot++) { uint32_t a = Reg(0x4800 + slot * 2) & 0x1FFFFFFC; if (a >= rlo && a < rhi) { rsum[{ d.vsHash, d.psHash }]++; break; } }
+                if (g_frameCounter >= rlast + 600)
+                {
+                    std::string m; for (auto& kv : rsum) { char t[64]; snprintf(t, sizeof(t), " %08X/%08X=%u", (uint32_t)(kv.first.first >> 32), (uint32_t)(kv.first.second >> 32), kv.second); m += t; }
+                    LOG("[vbrsum] frames %llu..%llu:%s", (unsigned long long)rlast, (unsigned long long)g_frameCounter, m.c_str());
+                    rsum.clear(); rlast = g_frameCounter;
+                }
+            }
             if (rhi && rlog < 200)
                 for (uint32_t slot = 88; slot < 96; slot++)
                 {
