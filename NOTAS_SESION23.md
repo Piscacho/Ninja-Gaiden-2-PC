@@ -27,12 +27,22 @@ Desglose nuevo en `[tiron]`: `texturas N ms (crear X ms xN, subir Y ms xN)`.
 - Aviso `[d3d12] subida lenta: ...` para subidas de más de 8 ms.
 - Biblioteca de PSO en disco (`shadercache/pso.lib`, `ID3D12PipelineLibrary`): funciona pero no mejora nada (el controlador
   ya cachea); solo con `NG2_PSOLIB=1`.
-- Lo que queda del peor corte (~100 ms): ~20 ms de 61 PSO, ~35 ms de texturas y el resto del propio juego.
+- **Lectura de memoria de subida**: el destileado escribía cada texel en el anillo de subida (memoria de escritura combinada) y
+  luego lo volvía a leer para convertirlo (profundidad 20e4, 16 bits → half). Ahora convierte en un búfer local y escribe una vez:
+  la profundidad de 1024×1024 pasa de 34 ms a menos de 8 y desaparecen los avisos de subida lenta.
+- Lo que queda del peor corte (**89 ms**, antes 345): ~25 ms de 61 PSO, ~25 ms de texturas y el resto del propio juego.
+- El tirón de ~115 ms hacia el segundo 60 es la carga del capítulo del propio juego (pantalla «NOW LOADING»).
 
-## 3. Otras comprobaciones
+## 3. Filtrado anisótropo
+
+- El muestreador s0 (lineal) pasa a anisótropo ×16 por defecto (`NG2_ANISO`, `anisotropico=` en ng2.ini; 0 = lineal como
+  antes). Sin coste medible (60 fps igual) ni cambios en planos frontales.
+
+## 4. Otras comprobaciones
 
 - Bajada de fps: no es un fallo (cinemáticas a 30 fps a propósito; sesión 22).
 - Volcado por frame de 046D0000: ya no aparece (0 volcados por frame en toda la partida).
+- La distribución funciona desde una carpeta nueva (copia de `dist\NG2` con la ruta del ISO): llega a la cinemática.
 - LOAD GAME con el autoguardado de capítulo funciona (`scripts/cargar.txt`). OPTIONS (ajustes y mando) y NINJA CINEMA se ven
   bien (`scripts/menus.txt`).
 - Para pruebas repetibles: la partida de sistema (`ng2sysd.dat`) marca las cinemáticas como vistas y las pulsaciones de A del
