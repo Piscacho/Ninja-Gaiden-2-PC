@@ -49,3 +49,10 @@ void RegisterGuestThread(PPCContext* ctx, uint32_t entry);
 void StartDiagnostics();
 void InitXexHeader(const uint8_t* xex, size_t size);
 uint32_t XexHeaderField(uint32_t key);
+
+// Sesion 26: direcciones del juego que cambian con la actualizacion del titulo #2 (NG2_TU): NG2ADDR(original, tu)
+#ifdef NG2_TU
+#define NG2ADDR(orig, tu) (tu)
+#else
+#define NG2ADDR(orig, tu) (orig)
+#endif

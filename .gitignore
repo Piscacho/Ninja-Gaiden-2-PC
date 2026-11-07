@@ -40,3 +40,5 @@ dist_files/logo.png
 # actualizacion del titulo (datos del juego del usuario)
 tu/
 tools/lzxdelta.exe
+ppc_tu/
+ppc_tu_viejos/

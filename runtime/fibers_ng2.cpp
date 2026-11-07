@@ -11,6 +11,7 @@
 //   +0x1C lr inicial (0x838191F0 = arranque de fibra), +0x30 r1, +0x98.. r14..r31 (r31 = rutina), +0x1A8.. f14..f31.
 #include "runtime.h"
 #include <ppc_recomp_shared.h>
+#include "tu_remap.h"   // sesion 26
 #include <windows.h>
 #include <mutex>
 #include <string>
@@ -57,7 +58,7 @@ void WINAPI FiberProc(void* param)
     if (g_fiberLog) LOG("[fiber] arranca fibra %08X (rutina %08X, param %08X, pila %08X) en hilo %lu", f->guest,
                         (uint32_t)c.r31.u64, Load32(f->guest), (uint32_t)c.r1.u64, GetCurrentThreadId());
     PPCFunc* fn = (lr >= PPC_CODE_BASE && lr < PPC_CODE_BASE + PPC_CODE_SIZE && !(lr & 3)) ? PPC_LOOKUP_FUNC(g_base, lr) : nullptr;
-    if (lr != 0x838191F0) LOG("[fiber] AVISO: fibra %08X con lr inicial %08X (no es el arranque de fibra)", f->guest, lr);
+    if (lr != NG2ADDR(0x838191F0u, 0x8383E8D0u)) LOG("[fiber] AVISO: fibra %08X con lr inicial %08X (no es el arranque de fibra)", f->guest, lr);
     if (!fn) { LOG("[fiber] lr inicial %08X sin funcion traducida", lr); ExitProcess(4); }
     fn(c, g_base);
     LOG("[fiber] la fibra %08X ha terminado (no deberia)", f->guest);

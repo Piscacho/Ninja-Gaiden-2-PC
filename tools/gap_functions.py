@@ -20,7 +20,8 @@ for a in range(T0, T1, 4):
         bl.add(a + d)
 # NG2: los punteros desde .rdata/.data a codigo precedido de blr/b/relleno tambien son inicios de funcion
 def _is_end(x): return x in (0x4E800020, 0, 0x4E800420) or (x >> 26 == 18 and x & 3 == 0)
-for _s0, _s1 in ((0x82000600, 0x82291A00), (0x83A70000, 0x859E1E00)):
+_rd = [x for x in sections(img)[2] if x[0] in (".rdata", ".data")]   # sesion 26: rangos de la propia imagen (original o TU)
+for _s0, _s1 in ((x[1], x[1] + x[2]) for x in _rd):
     for _a in range(_s0, _s1, 4):
         _t = w(_a)
         if T0 <= _t < T1 and _t & 3 == 0 and w(_t) != 0 and _is_end(w(_t - 4)): bl.add(_t)

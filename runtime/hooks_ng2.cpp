@@ -2,6 +2,7 @@
 // NG2_HOOKLOG=1 registra cada llamada (con hilo, r3..r5 y lr) de las funciones de la lista.
 #include "runtime.h"
 #include <ppc_recomp_shared.h>
+#include "tu_remap.h"   // sesion 26: nombres de la actualizacion del titulo
 #include <windows.h>
 #include <atomic>
 #include <cmath>
@@ -25,6 +26,7 @@ void HookLog(const char* name, PPCContext& ctx, std::atomic<int>& n)
 
 // Gancho que registra el valor devuelto (r3) cada vez que cambia
 #define NG2_RET_HOOK(addr, label)     PPC_FUNC_IMPL(__imp__sub_##addr);     PPC_FUNC(sub_##addr) { static std::atomic<uint64_t> last{ ~0ull }; uint32_t a3 = ctx.r3.u32; __imp__sub_##addr(ctx, base);         if (g_hookLog && last.exchange(ctx.r3.u64) != ctx.r3.u64) LOG("[ret] %s(r3=%08X) -> %llX (t=%lu ms)", label, a3, (unsigned long long)ctx.r3.u64, GetTickCount()); }
+#ifndef NG2_TU   // sesion 26: ganchos de registro de direcciones del original (no aplican a la TU)
 NG2_TRACE_HOOK(823D6510, "fin de lectura (rutina de usuario)")
 NG2_TRACE_HOOK(838199D8, "BasepIoCompletion")
 NG2_RET_HOOK(8245A2C0, "estado escena 8245A2C0")
@@ -61,6 +63,7 @@ NG2_TRACE_HOOK(824645D0, "PAUSA (a)")
 NG2_TRACE_HOOK(82464658, "REANUDAR (a)")
 NG2_TRACE_HOOK(8364F298, "PAUSA (b)")
 NG2_TRACE_HOOK(8364F370, "REANUDAR (b)")
+#endif
 
 // NG2_DUMPMEM=<dir hex>:<bytes hex>:<segundos>[;...]: vuelca memoria de invitado (palabras BE) a esos segundos del arranque
 #include <thread>
@@ -96,8 +99,8 @@ struct DumpMemInit
 } g_dumpMemInit;
 }
 
-// Sesion 12 (activo por defecto; NG2_NOSAVEFIX=1 lo quita): con perfil, el gestor de partidas (sub_83661650, objeto 0x85309728) queda en la peticion
-// 12 (+0x130) esperando a que el almacenamiento del usuario 0 (0x83B271B0, 0x6E0 bytes) este listo, pero esa estructura nunca se
+// Sesion 12 (activo por defecto; NG2_NOSAVEFIX=1 lo quita): con perfil, el gestor de partidas (sub_83661650, objeto NG2ADDR(0x85309728u, 0x85324120u)) queda en la peticion
+// 12 (+0x130) esperando a que el almacenamiento del usuario 0 (NG2ADDR(0x83B271B0u, 0x83B3D020u), 0x6E0 bytes) este listo, pero esa estructura nunca se
 // inicializa (palabra 0 = 0, +8 = -1). Se llama una vez a su inicializacion sub_8365EA70(estructura, usuario 0, 0, 1) como hace el
 // propio gestor en 0x83661E38.
 PPC_FUNC_IMPL(__imp__sub_83661650);
@@ -107,18 +110,18 @@ PPC_FUNC(sub_83661650)
     static const bool on = getenv("NG2_NOSAVEFIX") == nullptr;
     static bool done = false;
     static DWORD lastLog = 0;
-    if (on && getenv("NG2_SAVELOG") && GetTickCount() - lastLog > 5000) { lastLog = GetTickCount(); LOG("[save] gestor: peticion %u paso %u, usuario0 palabra0 %08X", Load32(0x85309728 + 0x130), Load32(0x85309728 + 0x134), Load32(0x83B271B0)); }
+    if (on && getenv("NG2_SAVELOG") && GetTickCount() - lastLog > 5000) { lastLog = GetTickCount(); LOG("[save] gestor: peticion %u paso %u, usuario0 palabra0 %08X", Load32(NG2ADDR(0x85309728u, 0x85324120u) + 0x130), Load32(NG2ADDR(0x85309728u, 0x85324120u) + 0x134), Load32(NG2ADDR(0x83B271B0u, 0x83B3D020u))); }
     // La inicializacion del usuario llega despues de emitir la peticion y la deja inactiva (+0x6DC = 6, campo de operacion = 1):
     // se relanza la operacion con sub_83660658(usuario 0), como hace el gestor al emitir la peticion.
-    uint32_t w0 = Load32(0x83B271B0);
-    if (on && Load32(0x85309728 + 0x130) == 12 && w0 != 0 && ((w0 >> 8) & 0xF) == 1 && Load32(0x83B271B0 + 0x6DC) == 6)
+    uint32_t w0 = Load32(NG2ADDR(0x83B271B0u, 0x83B3D020u));
+    if (on && Load32(NG2ADDR(0x85309728u, 0x85324120u) + 0x130) == 12 && w0 != 0 && ((w0 >> 8) & 0xF) == 1 && Load32(NG2ADDR(0x83B271B0u, 0x83B3D020u) + 0x6DC) == 6)
     {
         static int retries = 0;
         if (retries++ < 3)
         {
             PPCContext c = ctx; c.r3.u64 = 0;
             __imp__sub_83660658(c, base);
-            LOG("[save] operacion del usuario 0 relanzada -> %llX (palabra 0 %08X, estado %u)", (unsigned long long)c.r3.u64, Load32(0x83B271B0), Load32(0x83B271B0 + 0x6DC));
+            LOG("[save] operacion del usuario 0 relanzada -> %llX (palabra 0 %08X, estado %u)", (unsigned long long)c.r3.u64, Load32(NG2ADDR(0x83B271B0u, 0x83B3D020u)), Load32(NG2ADDR(0x83B271B0u, 0x83B3D020u) + 0x6DC));
         }
     }
     (void)done;
@@ -201,6 +204,7 @@ static void DriverCallLog(const char* slot, PPCContext& ctx)
     if (k < 40 || k % 2000 == 0) LOG("[hair] conductor %s r3 %08X r4 %08X r5 %08X lr %08X (llamada %d)", slot, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, (uint32_t)ctx.lr, k);
 }
 #define NG2_DRIVER_HOOK(addr, slot) PPC_FUNC_IMPL(__imp__sub_##addr); PPC_FUNC(sub_##addr) { DriverCallLog(slot, ctx); __imp__sub_##addr(ctx, base); }
+#ifndef NG2_TU   // sesion 26: diagnostico del pelo con direcciones del original
 NG2_DRIVER_HOOK(82318CB8, "[1]")
 NG2_DRIVER_HOOK(82831588, "[3]")
 NG2_DRIVER_HOOK(82318D10, "[4]")
@@ -210,6 +214,7 @@ NG2_DRIVER_HOOK(82318D60, "[7]")
 NG2_DRIVER_HOOK(82318D88, "[8]")
 NG2_DRIVER_HOOK(82318DB0, "[9]")
 NG2_DRIVER_HOOK(836EDBA0, "[10]")
+#endif
 
 // Sesion 21 (diagnostico, NG2_HAIRLOG=1): funciones que recorren la lista de conductores de un nodo y preguntan su tipo
 static void TypeWalkLog(const char* name, PPCContext& ctx)
@@ -219,15 +224,18 @@ static void TypeWalkLog(const char* name, PPCContext& ctx)
     if (k < 30 || k % 5000 == 0) LOG("[hair] %s r3 %08X r4 %08X r5 %08X lr %08X (llamada %d)", name, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, (uint32_t)ctx.lr, k);
 }
 #define NG2_TYPEWALK_HOOK(addr) PPC_FUNC_IMPL(__imp__sub_##addr); PPC_FUNC(sub_##addr) { TypeWalkLog("sub_" #addr, ctx); __imp__sub_##addr(ctx, base); }
+#ifndef NG2_TU   // sesion 26: diagnostico del pelo con direcciones del original
 NG2_TYPEWALK_HOOK(837F9B30)
 NG2_TYPEWALK_HOOK(838024F8)
 NG2_TYPEWALK_HOOK(838026D8)
 NG2_TYPEWALK_HOOK(838029C8)
 NG2_TYPEWALK_HOOK(83803220)
 NG2_TYPEWALK_HOOK(83869370)
+#endif
 
 // Sesion 24 (diagnostico, NG2_EFFLOG=1): sub_8365D730 resuelve nombres -> indice en la tabla fija de 5099 nombres (0x83AEBC98)
 // para 4 listas de registros de 12 bytes (punteros en 0x83A97120). Registra cuantos registros quedan resueltos.
+#ifndef NG2_TU   // sesion 26: solo diagnostico, sin pareja en la TU
 PPC_FUNC_IMPL(__imp__sub_8365D730);
 PPC_FUNC(sub_8365D730)
 {
@@ -247,6 +255,7 @@ PPC_FUNC(sub_8365D730)
         LOG("[eff] lista %d @%08X: %d registros, %d resueltos;%s", l, lst, n, ok, ej.c_str());
     }
 }
+#endif
 // Sesion 24 (diagnostico, NG2_EFFLOG=1): carga del paquete de efectos comun (indice 4791 = effect\effpk_common\effpk_common.emc).
 // 0x82443498: si !sub_822FF5A8(4791, obj+0x134) -> sub_823D6F00(4791, *(obj+0x134), r5)
 PPC_FUNC_IMPL(__imp__sub_822FF5A8);
@@ -267,6 +276,7 @@ PPC_FUNC(sub_823D6F00)
 }
 // Sesion 24 (diagnostico, NG2_EFFLOG=1): sub_8370AB48(indice) busca el bloque de tipo 33 de un recurso (tabla en
 // *(0x83BBC090 + 112)); lo llama el codigo de golpes (sub_82418130). Cuenta aciertos y fallos.
+#ifndef NG2_TU   // sesion 26: solo diagnostico, sin pareja en la TU
 PPC_FUNC_IMPL(__imp__sub_8370AB48);
 PPC_FUNC(sub_8370AB48)
 {
@@ -277,6 +287,7 @@ PPC_FUNC(sub_8370AB48)
     int k = n.fetch_add(1); if (ctx.r3.u32 == 0) nz++;
     if (k < 30 || k % 2000 == 0) LOG("[eff] sub_8370AB48(%u) -> %08X (llamadas %d, nulas %d, lr %08X, tabla %08X, limite %u)", a3 & 0xFFFF, ctx.r3.u32, k + 1, nz.load(), (uint32_t)ctx.lr, Load32(0x83BBC090 + 112), Load32(0x84C236A4));
 }
+#endif
 
 // Sesion 25 (diagnostico, NG2_PATHLOG=1): tiempo de sub_82385A00 (busqueda en un grafo de 256 nodos durante las cargas de zona;
 // aparece en los tirones de 130 ms del hilo principal).

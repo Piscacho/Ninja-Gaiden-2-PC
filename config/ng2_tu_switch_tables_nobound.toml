@@ -1,0 +1,11 @@
+[[switch]]
+base = 0x836C7EB8
+r = 3
+default = 0x0
+labels = [
+    0x836C7F08,
+    0x836C7EE0,
+    0x836C7EF0,
+    0x836C7F00,
+]
+

@@ -9,8 +9,15 @@ Uso: python -I jt_finder.py SALIDA.toml  (anade solo los bctr no cubiertos por c
 """
 import struct, re, sys
 R = "G:/ninja gaiden 2/Recomp/"
-img = open(R + "xex/basefile.bin", "rb").read(); B = 0x82000000
-T0, T1 = 0x822F0000, 0x822F0000 + 0x171F444
+import os
+# Sesion 26: JT_IMG / JT_TOML / JT_PDATA para usarlo con la actualizacion del titulo (por defecto, el original)
+IMG = os.environ.get("JT_IMG", R + "xex/basefile.bin"); EXIST = os.environ.get("JT_TOML", R + "config/ng2_switch_tables.toml")
+PDATA = os.environ.get("JT_PDATA", R + "xex/functions_pdata.txt")
+img = open(IMG, "rb").read(); B = 0x82000000
+sys.path.insert(0, R + "tools")
+from pe_sections import sections
+_t = [x for x in sections(img)[2] if x[0] == ".text"][0]
+T0, T1 = _t[1], _t[1] + _t[2]
 w = lambda a: struct.unpack_from(">I", img, a - B)[0]
 OP = lambda x: x >> 26
 RT = lambda x: (x >> 21) & 31
@@ -142,7 +149,7 @@ def branches_to(target):
 
 def main():
     out_path = sys.argv[1]
-    existing = open(R + "config/ng2_switch_tables.toml").read()
+    existing = open(EXIST).read()
     covered = set()
     for b in re.findall(r"base = 0x(\w+)", existing):
         for k in range(0, 0x40, 4): covered.add(int(b, 16) + k)
@@ -174,7 +181,7 @@ def main():
             else: still.append((a, p))
         pending = still
     # plan B (sesion 10): tabla ABS en linea justo detras del bctr -> contar entradas que apuntan dentro de la funcion
-    fn = [(int(x, 16), int(y, 16)) for x, y in (l.split() for l in open(R + "xex/functions_pdata.txt"))]
+    fn = [(int(x, 16), int(y, 16)) for x, y in (l.split() for l in open(PDATA))]
     import bisect
     starts = [f[0] for f in fn]
     still = []
