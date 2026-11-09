@@ -311,6 +311,19 @@ LRESULT CALLBACK SelProc(HWND h, UINT m, WPARAM w, LPARAM l)
         InvalidateRect(h, nullptr, FALSE);
         SendMessageW(GetParent(h), WM_COMMAND, MAKEWPARAM(GetDlgCtrlID(h), CBN_SELCHANGE), (LPARAM)h);
     };
+    auto OpenList = [&]() {
+        if (!d || d->items.empty()) return;
+        HMENU mn = CreatePopupMenu();
+        for (size_t i = 0; i < d->items.size(); i++) AppendMenuW(mn, MF_STRING | ((int)i == d->sel ? MF_CHECKED : 0), i + 1, d->items[i].c_str());
+        RECT r; GetWindowRect(h, &r);
+        int cmd = TrackPopupMenu(mn, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN | TPM_NONOTIFY, r.left, r.bottom, 0, h, nullptr);
+        DestroyMenu(mn);
+        if (cmd > 0 && cmd - 1 != d->sel)
+        {
+            d->sel = cmd - 1; InvalidateRect(h, nullptr, FALSE);
+            SendMessageW(GetParent(h), WM_COMMAND, MAKEWPARAM(GetDlgCtrlID(h), CBN_SELCHANGE), (LPARAM)h);
+        }
+    };
     switch (m)
     {
     case WM_NCCREATE: SetWindowLongPtrW(h, GWLP_USERDATA, (LONG_PTR)new SelData()); break;
@@ -320,12 +333,17 @@ LRESULT CALLBACK SelProc(HWND h, UINT m, WPARAM w, LPARAM l)
     case CB_GETCURSEL: return d->items.empty() ? -1 : d->sel;
     case WM_GETDLGCODE: return DLGC_WANTARROWS;
     case WM_SETFOCUS: case WM_KILLFOCUS: case WM_ENABLE: InvalidateRect(h, nullptr, FALSE); return 0;
-    case WM_LBUTTONDOWN: case WM_LBUTTONDBLCLK: { SetFocus(h); RECT rc; GetClientRect(h, &rc); step(GET_X_LPARAM(l) < rc.right / 2 ? -1 : 1); return 0; }
+    case WM_LBUTTONDOWN: case WM_LBUTTONDBLCLK:
+    {
+        SetFocus(h); RECT rc; GetClientRect(h, &rc); int x = GET_X_LPARAM(l), aw = S(30);
+        if (x < aw) step(-1); else if (x > rc.right - aw) step(1); else OpenList();
+        return 0;
+    }
     case WM_MOUSEWHEEL: step(GET_WHEEL_DELTA_WPARAM(w) > 0 ? -1 : 1); return 0;
-    case WM_KEYDOWN: if (w == VK_LEFT) step(-1); else if (w == VK_RIGHT || w == VK_SPACE) step(1); return 0;
+    case WM_KEYDOWN: if (w == VK_LEFT) step(-1); else if (w == VK_RIGHT) step(1); else if (w == VK_SPACE || w == VK_RETURN || w == VK_F4 || w == VK_DOWN) OpenList(); return 0;
     case WM_MOUSEMOVE:
     {
-        RECT rc; GetClientRect(h, &rc); int hot = GET_X_LPARAM(l) < rc.right / 2 ? -1 : 1;
+        RECT rc; GetClientRect(h, &rc); int x = GET_X_LPARAM(l), hot = x < S(30) ? -1 : x > rc.right - S(30) ? 1 : 2;
         if (!d->tracking) { TRACKMOUSEEVENT t{ sizeof(t), TME_LEAVE, h, 0 }; TrackMouseEvent(&t); d->tracking = true; }
         if (hot != d->hot) { d->hot = hot; InvalidateRect(h, nullptr, FALSE); }
         SetCursor(LoadCursor(nullptr, IDC_HAND));
@@ -346,7 +364,13 @@ LRESULT CALLBACK SelProc(HWND h, UINT m, WPARAM w, LPARAM l)
         RECT left{ 0, 0, aw, rc.bottom }, right{ rc.right - aw, 0, rc.right, rc.bottom }, mid{ aw, 0, rc.right - aw, rc.bottom };
         Text(mem, L"◀", left, d->hot < 0 ? kAccent2 : kAccentDim, g.fontSmall, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         Text(mem, L"▶", right, d->hot > 0 ? kAccent2 : kAccentDim, g.fontSmall, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-        if (!d->items.empty()) Text(mem, d->items[d->sel].c_str(), mid, kText, g.font, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        if (!d->items.empty())
+        {   // valor actual y una flecha hacia abajo: al pulsar se despliega la lista (sesion 27)
+            RECT tm = mid; tm.right -= S(18);
+            Text(mem, d->items[d->sel].c_str(), tm, d->hot == 2 ? kAccent2 : kText, g.font, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            RECT dn{ mid.right - S(22), 0, mid.right, rc.bottom };
+            Text(mem, L"▾", dn, d->hot == 2 ? kAccent2 : kAccentDim, g.font, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        }
         BitBlt(dc, 0, 0, rc.right, rc.bottom, mem, 0, 0, SRCCOPY);
         SelectObject(mem, ob); DeleteObject(bm); DeleteDC(mem);
         EndPaint(h, &ps);
@@ -770,6 +794,12 @@ bool RunLauncherUI()
     DPI_AWARENESS_CONTEXT oldDpi = SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     INITCOMMONCONTROLSEX icc{ sizeof(icc), ICC_STANDARD_CLASSES }; InitCommonControlsEx(&icc);
+    if (HMODULE ux = LoadLibraryW(L"uxtheme.dll"))
+    {   // sesion 27: listas desplegables (menus) con el tema oscuro de Windows 10/11
+        using SetMode = int(WINAPI*)(int); using Flush = void(WINAPI*)();
+        if (auto f = (SetMode)GetProcAddress(ux, MAKEINTRESOURCEA(135))) f(2 /* ForceDark */);
+        if (auto f = (Flush)GetProcAddress(ux, MAKEINTRESOURCEA(136))) f();
+    }
     g.inst = GetModuleHandleW(nullptr);
     g.dpi = (int)GetDpiForSystem(); if (g.dpi < 96) g.dpi = 96;
     g.ini.Load(ExeDirL() + "\\ng2.ini");

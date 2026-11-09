@@ -99,3 +99,17 @@ tipo 000B0000, «Ninja Gaiden 2 Title Update #2», título 544307D5, media ID 69
 - Launcher: página Juego, «Actualización del título #2 (Mission Mode)» con su estado. LEEME con las instrucciones.
 - `make_dist.bat` copia `NG2TU.exe`. Prueba desde una carpeta nueva con los 4 DLC y la TU originales en `dlc/`: importa todo,
   aplica la TU (36 bloques, 1109 registros) y entra en una misión.
+
+## Sesión 27 (2026-11-08): tirones del primer arranque, launcher con listas y panorámico mejor
+
+- Tirones de la partida del usuario (dist nueva, 32:9 a 5120x1440): 56, mediana 99 ms, máximo 1,3 s; casi todos **PSO**
+  (29 PSO = 1245 ms en un corte; 40-200 ms cada uno sin caché del controlador). Ahora los PSO se crean en un grupo de hilos propio
+  (`EnqueuePso`): el draw se omite ese frame y toma el PSO ya hecho en cuanto está. Sin ninguna caché (`NG2_NOSHADERCACHE=1`):
+  9 tirones, máximo 196 ms, 0 ms de PSO. `NG2_SYNCPSO=1` = antes.
+- Launcher: al pulsar en el centro de un selector se despliega la lista de opciones (menú con tema oscuro, marca en la actual);
+  las flechas siguen pasando de una en una; Intro/Espacio/F4/abajo también la abren.
+- Panorámico: solo en los frames con escena 3D (draws con prueba de profundidad en la superficie de la escena, pitch 1120; margen
+  de 30 frames). Vídeos, menús y pantallas de carga se presentan a 16:9 con bandas negras. El GS de la interfaz también actúa en la
+  superficie de 1120 (el HUD se dibuja ahí) y con las listas de quads expandidas (antes la barra de vida no se comprimía).
+- Pendiente: la imagen interna sigue siendo 1280x720 estirada a lo ancho (en 5120x1440 se nota borrosa): haría falta renderizar
+  más ancho (superficies EDRAM del host × kx), como en GH.

@@ -10,6 +10,11 @@
 #include <d3dcompiler.h>
 #include <psapi.h>
 float PanoAspect(); void ApplyPanoCamera();   // panoramico (sesion 25)
+// Sesion 27: el panoramico solo se aplica en los frames con escena 3D (dibujos en la superficie de la escena, pitch 1120). Los
+// videos, menus y pantallas de carga (solo 2D de 16:9) se presentan a 16:9 con bandas negras en vez de estirarse.
+// g_pano3DFrames = frames seguidos sin escena (con margen de 30 frames para no parpadear).
+static bool g_frameHasScene = false; static int g_framesNoScene = 1000;
+static bool PanoActive() { return g_framesNoScene < 30; }
 #pragma comment(lib, "psapi.lib")
 #pragma comment(lib, "dxgi.lib")
 #include <wrl/client.h>
@@ -378,7 +383,7 @@ double QpcMs()
     static LARGE_INTEGER f = [] { LARGE_INTEGER x; QueryPerformanceFrequency(&x); return x; }();
     LARGE_INTEGER c; QueryPerformanceCounter(&c); return double(c.QuadPart) * 1000.0 / double(f.QuadPart);
 }
-double g_hCompileMs = 0, g_hPsoMs = 0, g_hTexMs = 0, g_hWaitMs = 0, g_hTexCreateMs = 0, g_hTexFillMs = 0; uint32_t g_hTexNew = 0, g_hTexUp = 0;
+uint64_t g_psoAsyncSkips = 0; double g_hCompileMs = 0, g_hPsoMs = 0, g_hTexMs = 0, g_hWaitMs = 0, g_hTexCreateMs = 0, g_hTexFillMs = 0; uint32_t g_hTexNew = 0, g_hTexUp = 0;
 uint32_t g_hCompiles = 0, g_hCacheHits = 0, g_hPsos = 0, g_hFlushes = 0;
 double g_hFlushMs = 0, g_hDrawMs = 0, g_hPresentMs = 0;
 thread_local bool t_prewarm = false;   // hilos de precompilacion: no cuentan en la medicion de tirones
@@ -623,6 +628,7 @@ static void RecordPso(uint64_t key, const D3D12_GRAPHICS_PIPELINE_STATE_DESC& pd
     r.vsBc = BcHash(pd.VS.pShaderBytecode, pd.VS.BytecodeLength); r.psBc = BcHash(pd.PS.pShaderBytecode, pd.PS.BytecodeLength);
     r.blend = pd.BlendState; r.rast = pd.RasterizerState; r.ds = pd.DepthStencilState; r.dsv = pd.DSVFormat; r.topo = pd.PrimitiveTopologyType;
     r.numRt = pd.NumRenderTargets; r.rtv[0] = pd.RTVFormats[0]; r.rtv[1] = pd.RTVFormats[1]; r.sampleMask = pd.SampleMask;
+    static std::mutex fileMutex; std::lock_guard fl(fileMutex);
     CreateDirectoryA("shadercache", nullptr);
     if (FILE* f = fopen("shadercache/psolist.bin", "ab")) { fwrite(&r, sizeof(r), 1, f); fclose(f); }
 }
@@ -631,6 +637,43 @@ static bool TakePrewarmedPso(uint64_t key, ComPtr<ID3D12PipelineState>& out)
     std::lock_guard lk(g_psoPreMutex);
     auto it = g_psoPre.find(key); if (it == g_psoPre.end()) return false;
     out = std::move(it->second); g_psoPre.erase(it); return true;
+}
+// Sesion 27: creacion asincrona de PSO. En una instalacion nueva (sin shadercache/psolist.bin ni cache del controlador) cada PSO
+// costaba 40-200 ms en el hilo de la GPU: 29 PSO en un corte = 1,2 s de congelacion. Ahora el draw encola el PSO, se omite ese
+// frame y lo toma ya hecho (TakePrewarmedPso) en cuanto esta. NG2_SYNCPSO=1 = crear en el momento como antes.
+static std::unordered_set<uint64_t> g_psoPending, g_psoFailed;
+struct PsoJob { uint64_t key; D3D12_GRAPHICS_PIPELINE_STATE_DESC pd; uint64_t vs, ps; int gs; };
+static void RecordPso(uint64_t key, const D3D12_GRAPHICS_PIPELINE_STATE_DESC& pd, uint64_t vsHash, uint64_t psHash, int rect);
+static bool EnqueuePso(const PsoJob& job)   // false si ya fallo antes (no se reintenta)
+{
+    static std::mutex m; static std::condition_variable cv; static std::vector<PsoJob> q; static std::once_flag once;
+    {
+        std::lock_guard lk(g_psoPreMutex);
+        if (g_psoFailed.count(job.key)) return false;
+        if (!g_psoPending.insert(job.key).second) return true;   // ya en cola
+    }
+    std::call_once(once, [] {
+        unsigned n = std::max(2u, std::min(4u, std::thread::hardware_concurrency() / 3));
+        for (unsigned i = 0; i < n; i++)
+            std::thread([] {
+                SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+                for (;;)
+                {
+                    PsoJob j;
+                    { std::unique_lock<std::mutex> l(m); cv.wait(l, [] { return !q.empty(); }); j = q.back(); q.pop_back(); }
+                    ComPtr<ID3D12PipelineState> pso;
+                    HRESULT hr = g_dev->CreateGraphicsPipelineState(&j.pd, IID_PPV_ARGS(&pso));
+                    if (SUCCEEDED(hr)) RecordPso(j.key, j.pd, j.vs, j.ps, j.gs);
+                    std::lock_guard lk(g_psoPreMutex);
+                    if (SUCCEEDED(hr)) g_psoPre[j.key] = pso;
+                    else { g_psoFailed.insert(j.key); static int nf = 0; if (nf++ < 12) LOG("[d3d12] PSO asincrono fallido hr=%08X VS %016llX PS %016llX", (unsigned)hr, (unsigned long long)j.vs, (unsigned long long)j.ps); }
+                    g_psoPending.erase(j.key);
+                }
+            }).detach();
+    });
+    { std::lock_guard<std::mutex> l(m); q.push_back(job); }
+    cv.notify_one();
+    return true;
 }
 static void PrewarmPsos(const std::unordered_map<uint64_t, ComPtr<ID3DBlob>>& blobs)
 {
@@ -1012,7 +1055,7 @@ void ApplyPanoCamera()
 namespace {
 void PresentViewport(D3D12_VIEWPORT& vp, D3D12_RECT& sr)
 {
-    float pa = PanoAspect();
+    float pa = PanoActive() ? PanoAspect() : 16.0f / 9.0f;
     float sc = std::min(g_bbW / ((float)kRtH * pa), g_bbH / (float)kRtH);
     float w = kRtH * pa * sc, h = kRtH * sc;
     vp = { std::floor((g_bbW - w) * 0.5f), std::floor((g_bbH - h) * 0.5f), w, h, 0, 1 };
@@ -3549,7 +3592,8 @@ static void D3D12DrawImpl(const XenosDraw& d)
     }
     // Sesion 25: tipo de GS: 1 = rect list, 2 = interfaz panoramica (superficie final de 1280 en 8888), 3 = las dos cosas
     int gsKind = rect ? 1 : 0;
-    if (g_uiGs && g_rectGsPano && ttype == D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE && !expand && (Reg(0x2000) & 0x3FFF) == 1280 && curRt->xfmt == 0) gsKind |= 2;
+    if ((Reg(0x2000) & 0x3FFF) == 1120 && (dc & 2)) g_frameHasScene = true;   // sesion 27: escena 3D = draws con prueba de profundidad en la superficie de la escena (los menus 2D no la usan)
+    if (PanoActive() && g_uiGs && g_rectGsPano && ttype == D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE && (((Reg(0x2000) & 0x3FFF) == 1280 && curRt->xfmt == 0) || (Reg(0x2000) & 0x3FFF) == 1120)) gsKind |= 2;   // sesion 27: el HUD se dibuja sobre la escena (1120)
     uint64_t key = (uint64_t(gsKind) * 0x2545F4914F6CDD1Dull) ^ d.vsHash * 31 ^ d.psHash ^ (uint64_t(d.primType) << 56) ^ (uint64_t(bc) << 8) ^ (uint64_t(colorMask) << 48)
                  ^ ((uint64_t(useDepth ? dc : 0) * 0x9E3779B97F4A7C15ull) ^ (uint64_t(sc) << 60)) ^ (uint64_t(curRt->fmt) * 0xC2B2AE3D27D4EB4Full)
                  ^ (rt1 ? ((uint64_t(rt1->fmt) + 1) * 0x165667B19E3779F9ull ^ (uint64_t(mask1) << 36) ^ (uint64_t(bc1) * 0x27D4EB2F165667C5ull)) : 0);
@@ -3609,7 +3653,16 @@ static void D3D12DrawImpl(const XenosDraw& d)
         pd.NumRenderTargets = rt1 ? 2 : 1; pd.RTVFormats[0] = curRt->fmt; pd.SampleDesc.Count = 1;
         if (rt1) pd.RTVFormats[1] = rt1->fmt;
         double tPso = QpcMs(); HRESULT hrPso = S_OK;
-        if (!TakePrewarmedPso(key, pso)) { hrPso = CreatePsoCached(key, pd, pso); g_hPsos++; if (SUCCEEDED(hrPso)) RecordPso(key, pd, d.vsHash, d.psHash, gsKind); }
+        static const bool syncPso = getenv("NG2_SYNCPSO") != nullptr;
+        if (!TakePrewarmedPso(key, pso))
+        {
+            if (!syncPso)
+            {
+                if (EnqueuePso({ key, pd, d.vsHash, d.psHash, gsKind })) { g_psoAsyncSkips++; g_skipped[2]++; return; }   // se dibuja cuando este
+                hrPso = E_FAIL;
+            }
+            else { hrPso = CreatePsoCached(key, pd, pso); g_hPsos++; if (SUCCEEDED(hrPso)) RecordPso(key, pd, d.vsHash, d.psHash, gsKind); }
+        }
         g_hPsoMs += QpcMs() - tPso;
         if (FAILED(hrPso)) { static int psoFailLog = 0; if (psoFailLog++ < 12) LOG("[d3d12] PSO fallido hr=%08X (prim %u, formato RT %d, rt1 %d) VS %016llX PS %016llX bc=%08X dc=%08X mask=%X", (unsigned)hrPso, d.primType, (int)curRt->fmt, rt1 ? (int)rt1->fmt : -1, (unsigned long long)d.vsHash, (unsigned long long)d.psHash, bc, useDepth ? dc : 0, colorMask); g_skipped[2]++; return; }
     }
@@ -3632,7 +3685,7 @@ static void D3D12DrawImpl(const XenosDraw& d)
         if (cbase == 0x4000)
         {   // Sesion 25: en el VS, XVte.w = escala Hor+ del panoramico en las superficies proporcionales a la pantalla (no sombras)
             static const float kx = PanoAspect() / (16.0f / 9.0f);
-            v[3] = (kx > 1.001f && (rtw == 1120 || rtw == 560 || rtw == 280 || rtw == 1280 || rtw == 640 || rtw == 320)) ? kx : 0.0f;
+            v[3] = (kx > 1.001f && PanoActive() && (rtw == 1120 || rtw == 560 || rtw == 280 || rtw == 1280 || rtw == 640 || rtw == 320)) ? kx : 0.0f;
         }
         {   // NG2_PSOUTAT=<s> (diagnostico): las sustituciones de NG2_PSOUT solo actuan desde ese segundo (XVte.z < 0 en el PS)
             static const double psoutAt = getenv("NG2_PSOUTAT") ? atof(getenv("NG2_PSOUTAT")) : -1;
@@ -4195,6 +4248,7 @@ bool D3D12PresentResolved(HWND hwnd, uint32_t fb, std::vector<uint32_t>* readbac
         }
         { extern void HitchProfNotify(double, double, uint64_t); if (dt > 0) HitchProfNotify(now - dt, now, hn); }
         OverlayTick(g_frameDraws);
+        g_framesNoScene = g_frameHasScene ? 0 : std::min(g_framesNoScene + 1, 1000); g_frameHasScene = false;   // sesion 27
         if (dt > hitchMs && hitches++ < 2000)
             LOG("[tiron] frame %llu: %.0f ms | compilar %.0f ms (%u nuevos, %u de cache) | PSO %.0f ms (%u) | texturas %.0f ms (crear %.0f ms x%u, subir %.0f ms x%u) | espera GPU %.0f ms | vaciados %.0f ms (%u)",
                 (unsigned long long)hn, dt, g_hCompileMs, g_hCompiles, g_hCacheHits, g_hPsoMs, g_hPsos, g_hTexMs, g_hTexCreateMs, g_hTexNew, g_hTexFillMs, g_hTexUp, g_hWaitMs, g_hFlushMs, g_hFlushes);
@@ -4275,6 +4329,7 @@ bool D3D12Present(HWND hwnd, const uint32_t* pixels, uint32_t w, uint32_t h)
         g_list->DrawInstanced(3, 1, 0, 0);
     }
     if (useEdram) { auto b = Transition(g_edram.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET); ProbedBarrier(1, &b, __LINE__); }
+    g_framesNoScene = g_frameHasScene ? 0 : std::min(g_framesNoScene + 1, 1000); g_frameHasScene = false;   // sesion 27: presentacion desde memoria (videos)
     OverlayDraw(fi);   // sesion 25: contador (F3)
     auto toPresent = Transition(g_backbuffers[fi].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
     ProbedBarrier(1, &toPresent, __LINE__);
