@@ -15,6 +15,12 @@ float PanoAspect(); void ApplyPanoCamera();   // panoramico (sesion 25)
 // g_pano3DFrames = frames seguidos sin escena (con margen de 30 frames para no parpadear).
 static bool g_frameHasScene = false; static int g_framesNoScene = 1000;
 static bool PanoActive() { return g_framesNoScene < 30; }
+// Sesion 27: panoramico nitido. Las superficies proporcionales a la pantalla (pitch 1120/560/280 de la escena y 1280/640/320
+// de la imagen final) se crean S veces mas anchas (S = kx redondeado hacia arriba: 2 en 21:9 y 32:9). Todo lo que va en pixeles
+// de la superficie (viewport, recortes, borrados, resolves) se escala por S; las texturas resueltas quedan S veces mas anchas
+// (ResolvedTex::sx) y las lecturas en texeles y PsParamGen lo compensan. NG2_PANOSTRETCH=1 = antes (1280x720 estirado).
+uint32_t PanoWide();
+static inline uint32_t SurfS(uint32_t p) { return (p == 1120 || p == 560 || p == 280 || p == 1280 || p == 640 || p == 320) ? PanoWide() : 1u; }
 #pragma comment(lib, "psapi.lib")
 #pragma comment(lib, "dxgi.lib")
 #include <wrl/client.h>
@@ -87,7 +93,7 @@ ComPtr<ID3DBlob> g_rectGs, g_uiGs, g_rectGsPano;   // sesion 25: GS del panorami
 // Sesion 21: cada superficie tiene el formato de RB_COLOR_INFO (bits 16-19), no siempre BGRA8
 struct EdramRt
 {
-    ComPtr<ID3D12Resource> res; UINT w = 0, h = 0, rtv = 0, base = 0;
+    ComPtr<ID3D12Resource> res; UINT w = 0, h = 0, rtv = 0, base = 0, sx = 1;   // sx: ancho extra del panoramico (sesion 27)
     uint32_t xfmt = 0; DXGI_FORMAT fmt = DXGI_FORMAT_B8G8R8A8_UNORM; UINT bpp = 4; float outScale = 0;
 };
 // Formato de color de Xenos -> DXGI. Las superficies 16_16 / 16_16_16_16 de Xenos son de punto fijo -32..32: SNORM con la salida escalada 1/32.
@@ -113,7 +119,7 @@ ComPtr<ID3D12Resource> g_readback;
 uint64_t g_resolves = 0, g_fbResolves = 0;
 constexpr UINT kEdramH = 1024;
 // ---- profundidad (sesion 19): una superficie D32+S8 por (base de depth, pitch) ----
-struct DepthRt { ComPtr<ID3D12Resource> res; UINT w = 0, h = 0, dsv = 0; };
+struct DepthRt { ComPtr<ID3D12Resource> res; UINT w = 0, h = 0, dsv = 0, sx = 1; };
 std::unordered_map<uint32_t, DepthRt> g_depthRts;
 ComPtr<ID3D12DescriptorHeap> g_dsvHeap;
 UINT g_dsvSize = 0;
@@ -222,7 +228,10 @@ float ps_main(float4 pos : SV_Position) : SV_Depth
     // En la EDRAM, las baldosas de profundidad tienen las dos columnas de 40 muestras intercambiadas respecto a las de color
     // (como Xenia al copiar entre color y profundidad). Sin esto cada franja de 40 px recibia la profundidad de su vecina.
     uint w, h; S.GetDimensions(w, h);
-    int tx = p.x % 80; int sx = p.x + (tx < 40 ? 40 : -40);
+#ifndef SWAPK
+#define SWAPK 1
+#endif
+    int tx = (p.x / SWAPK) % 80; int sx = p.x + (tx < 40 ? 40 : -40) * SWAPK;
     if (sx >= 0 && sx < (int)w) p.x = sx;
 #endif
     float4 c = S.Load(int3(p, 0));
@@ -231,7 +240,7 @@ float ps_main(float4 pos : SV_Position) : SV_Depth
 }
 )";
 ComPtr<ID3D12RootSignature> g_colorToDepthRootSig;
-ComPtr<ID3D12PipelineState> g_colorToDepthPso;
+ComPtr<ID3D12PipelineState> g_colorToDepthPso, g_colorToDepthPsoK;   // K: superficie panoramica (sesion 27)
 ComPtr<ID3D12RootSignature> g_colorResolveRootSig;
 ComPtr<ID3D12PipelineState> g_colorResolvePso, g_colorResolvePso1616, g_colorResolvePso1616F, g_colorResolvePso16F, g_colorResolvePso565;
 static const bool g_1616Sat = getenv("NG2_1616SAT") != nullptr;   // diagnostico: 16_16 -> k_16_16 recortado a 0..1 (antes)
@@ -976,6 +985,12 @@ bool Init(HWND hwnd)
             zpd.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
             zpd.NumRenderTargets = 0; zpd.DSVFormat = kDepthFmt; zpd.SampleDesc.Count = 1;
             g_dev->CreateGraphicsPipelineState(&zpd, IID_PPV_ARGS(&g_colorToDepthPso));
+            if (PanoWide() > 1)
+            {
+                const std::string kSrc = "#define SWAPK " + std::to_string(PanoWide()) + "\n" + c2dSrc;
+                auto kps = Compile(kSrc, "ps_main", "ps_5_0", "color2depthk");
+                if (kps) { zpd.PS = { kps->GetBufferPointer(), kps->GetBufferSize() }; g_dev->CreateGraphicsPipelineState(&zpd, IID_PPV_ARGS(&g_colorToDepthPsoK)); }
+            }
         }
     }
 
@@ -1045,6 +1060,15 @@ float PanoAspect()
         return std::max(r, 16.0f / 9.0f);
     }();
     return a;
+}
+uint32_t PanoWide()
+{
+    static const uint32_t s = [] {
+        float kx = PanoAspect() / (16.0f / 9.0f);
+        if (kx <= 1.001f || getenv("NG2_PANOSTRETCH")) return 1u;
+        return (uint32_t)std::min(4.0f, std::ceil(kx - 0.01f));
+    }();
+    return s;
 }
 void ApplyPanoCamera()
 {
@@ -1406,6 +1430,7 @@ struct ResolvedTex
     DXGI_FORMAT fmt = DXGI_FORMAT_B8G8R8A8_UNORM;      // sesion 24: formato del recurso (B8G8R8A8 o R32_FLOAT)
     uint32_t texFmt = 6;                               // formato de textura de Xenos del destino (6 = 8888, 2 = k_8, 36 = k_32_FLOAT)
     UINT rtv = ~0u;                                    // RTV en g_rtvHeap3 (resolves por shader)
+    UINT sx = 1;                                       // sesion 27: el recurso mide w * sx de ancho (superficie panoramica)
 };
 // Clave de una textura resuelta por GPU con formato distinto de 8888: los bits 32-43 de ResolvedKey estan libres
 inline uint64_t ResolvedFmtTag(uint32_t texFmt) { return texFmt == 6 ? 0 : (uint64_t(texFmt & 0x3F) << 32); }
@@ -1442,7 +1467,7 @@ static UINT HostRep(uint32_t fmt, uint32_t c)
 // Resolves de profundidad por GPU (sesion 21): rz = R32_FLOAT (lectura como k_24_8), rp = RGBA8 con los bits 24_8 (lectura como 8888)
 struct ResolvedDepth
 {
-    ComPtr<ID3D12Resource> rz, rp; UINT w = 0, h = 0, rtv = 0; uint32_t endian = 0; uint64_t frame = 0;
+    ComPtr<ID3D12Resource> rz, rp; UINT w = 0, h = 0, rtv = 0, sx = 1; uint32_t endian = 0; uint64_t frame = 0;
     D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_RENDER_TARGET;
 };
 std::unordered_map<uint64_t, ResolvedDepth> g_resolvedDepth;
@@ -1469,8 +1494,10 @@ inline uint32_t Swap32(uint32_t v, uint32_t e)
 }
 
 // Crea (o reutiliza) la textura de la constante de fetch tf y escribe su SRV en 'slot'. false -> usar blanca.
+uint32_t g_bindSx = 1;   // sesion 27: escala X del recurso enlazado por el ultimo BindTexture (texturas resueltas panoramicas)
 bool BindTexture(uint32_t tf, D3D12_CPU_DESCRIPTOR_HANDLE slot)
 {
+    g_bindSx = 1;
     uint32_t fc[6]; for (int i = 0; i < 6; i++) fc[i] = Reg(0x4800 + tf * 6 + i);
     if ((fc[0] & 3) != 2) return false;                    // no es constante de textura
     uint32_t fmt = fc[1] & 0x3F, endian = (fc[1] >> 6) & 3, base = fc[1] & 0xFFFFF000;
@@ -1555,6 +1582,7 @@ bool BindTexture(uint32_t tf, D3D12_CPU_DESCRIPTOR_HANDLE slot)
             sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D; sd.Texture2D.MipLevels = 1;
             sd.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(map(swz & 7), map((swz >> 3) & 7), map((swz >> 6) & 7), map((swz >> 9) & 7));
             g_dev->CreateShaderResourceView(fmt == 22 ? r.rz.Get() : r.rp.Get(), &sd, slot);
+            g_bindSx = r.sx;
             return true;
         }
     }
@@ -1582,6 +1610,7 @@ bool BindTexture(uint32_t tf, D3D12_CPU_DESCRIPTOR_HANDLE slot)
                 D3D12_SHADER_RESOURCE_VIEW_DESC sd{}; sd.Format = r.fmt; sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D; sd.Texture2D.MipLevels = 1;
                 sd.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(map(swz & 7), map((swz >> 3) & 7), map((swz >> 6) & 7), map((swz >> 9) & 7));
                 g_dev->CreateShaderResourceView(r.res.Get(), &sd, slot);
+                g_bindSx = r.sx;
                 return true;
             }
         }
@@ -1595,17 +1624,17 @@ bool BindTexture(uint32_t tf, D3D12_CPU_DESCRIPTOR_HANDLE slot)
             {
                 ResolvedTex& src = srcIt->second;
                 ResolvedTex& dsub = g_resolved[k ^ 1];
-                if (!dsub.res || dsub.gen != src.gen || dsub.w != w || dsub.h != h || dsub.fmt != src.fmt)
+                if (!dsub.res || dsub.gen != src.gen || dsub.w != w || dsub.h != h || dsub.fmt != src.fmt || dsub.sx != src.sx)
                 {
-                    if (!dsub.res || dsub.w != w || dsub.h != h || dsub.fmt != src.fmt)
+                    if (!dsub.res || dsub.w != w || dsub.h != h || dsub.fmt != src.fmt || dsub.sx != src.sx)
                     {
                         if (dsub.res) g_deferredRelease[g_fi].push_back(dsub.res);
                         dsub = ResolvedTex{};
                         D3D12_HEAP_PROPERTIES def{ D3D12_HEAP_TYPE_DEFAULT };
-                        D3D12_RESOURCE_DESC td{}; td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; td.Width = w; td.Height = h; td.DepthOrArraySize = 1; td.MipLevels = 1;
+                        D3D12_RESOURCE_DESC td{}; td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; td.Width = w * src.sx; td.Height = h; td.DepthOrArraySize = 1; td.MipLevels = 1;
                         td.Format = src.fmt; td.SampleDesc.Count = 1;
                         g_dev->CreateCommittedResource(&def, D3D12_HEAP_FLAG_NONE, &td, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&dsub.res));
-                        dsub.w = w; dsub.h = h; dsub.fmt = src.fmt; dsub.state = D3D12_RESOURCE_STATE_COPY_DEST;
+                        dsub.w = w; dsub.h = h; dsub.sx = src.sx; dsub.fmt = src.fmt; dsub.state = D3D12_RESOURCE_STATE_COPY_DEST;
                     }
                     if (dsub.res)
                     {
@@ -1613,7 +1642,7 @@ bool BindTexture(uint32_t tf, D3D12_CPU_DESCRIPTOR_HANDLE slot)
                         if (src.state != D3D12_RESOURCE_STATE_COPY_SOURCE) { bs[nb++] = Transition(src.res.Get(), src.state, D3D12_RESOURCE_STATE_COPY_SOURCE); src.state = D3D12_RESOURCE_STATE_COPY_SOURCE; }
                         if (dsub.state != D3D12_RESOURCE_STATE_COPY_DEST) { bs[nb++] = Transition(dsub.res.Get(), dsub.state, D3D12_RESOURCE_STATE_COPY_DEST); dsub.state = D3D12_RESOURCE_STATE_COPY_DEST; }
                         if (nb) ProbedBarrier(nb, bs, __LINE__);
-                        D3D12_BOX box{ 0, 0, 0, std::min(w, src.w), std::min(h, src.h), 1 };
+                        D3D12_BOX box{ 0, 0, 0, std::min(w, src.w) * src.sx, std::min(h, src.h), 1 };
                         SafeCopyRegion(dsub.res.Get(), src.res.Get(), box, "region derivada");
                         dsub.texFmt = src.texFmt; dsub.gen = src.gen; dsub.memHash = src.memHash; dsub.inMemory = src.inMemory; dsub.frame = src.frame;
                     }
@@ -1630,6 +1659,7 @@ bool BindTexture(uint32_t tf, D3D12_CPU_DESCRIPTOR_HANDLE slot)
                     D3D12_SHADER_RESOURCE_VIEW_DESC sd{}; sd.Format = dsub.fmt; sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D; sd.Texture2D.MipLevels = 1;
                     sd.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(map(swz & 7), map((swz >> 3) & 7), map((swz >> 6) & 7), map((swz >> 9) & 7));
                     g_dev->CreateShaderResourceView(dsub.res.Get(), &sd, slot);
+                    g_bindSx = dsub.sx;
                     return true;
                 }
             }
@@ -1652,6 +1682,7 @@ bool BindTexture(uint32_t tf, D3D12_CPU_DESCRIPTOR_HANDLE slot)
                 D3D12_SHADER_RESOURCE_VIEW_DESC sd{}; sd.Format = r.fmt; sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D; sd.Texture2D.MipLevels = 1;
                 sd.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(map(swz & 7), map((swz >> 3) & 7), map((swz >> 6) & 7), map((swz >> 9) & 7));
                 g_dev->CreateShaderResourceView(r.res.Get(), &sd, slot);
+                g_bindSx = r.sx;
                 return true;
             }
         }
@@ -1672,17 +1703,17 @@ bool BindTexture(uint32_t tf, D3D12_CPU_DESCRIPTOR_HANDLE slot)
                 ResolvedTex& s = srcIt->second;
                 ResolvedTex& dsub = g_resolved[ResolvedKey(base, w, h) ^ 1];   // clave derivada (bit 0 distinto)
                 static bool genMode = getenv("NG2_DSUBFRAME") == nullptr;   // NG2_DSUBFRAME=1: criterio anterior (por frame)
-                if (!dsub.res || (genMode ? dsub.gen != s.gen : dsub.frame != s.frame) || dsub.w != w || dsub.h != h)
+                if (!dsub.res || (genMode ? dsub.gen != s.gen : dsub.frame != s.frame) || dsub.w != w || dsub.h != h || dsub.sx != s.sx)
                 {
-                    if (!dsub.res || dsub.w != w || dsub.h != h)
+                    if (!dsub.res || dsub.w != w || dsub.h != h || dsub.sx != s.sx)
                     {
                         if (dsub.res) g_deferredRelease[g_fi].push_back(dsub.res);
                         dsub = ResolvedTex{};
                         D3D12_HEAP_PROPERTIES def{ D3D12_HEAP_TYPE_DEFAULT };
-                        D3D12_RESOURCE_DESC td{}; td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; td.Width = w; td.Height = h; td.DepthOrArraySize = 1; td.MipLevels = 1;
+                        D3D12_RESOURCE_DESC td{}; td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; td.Width = w * s.sx; td.Height = h; td.DepthOrArraySize = 1; td.MipLevels = 1;
                         td.Format = DXGI_FORMAT_B8G8R8A8_UNORM; td.SampleDesc.Count = 1;
                         g_dev->CreateCommittedResource(&def, D3D12_HEAP_FLAG_NONE, &td, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&dsub.res));
-                        dsub.w = w; dsub.h = h; dsub.state = D3D12_RESOURCE_STATE_COPY_DEST;
+                        dsub.w = w; dsub.h = h; dsub.sx = s.sx; dsub.state = D3D12_RESOURCE_STATE_COPY_DEST;
                     }
                     if (dsub.res)
                     {
@@ -1690,7 +1721,7 @@ bool BindTexture(uint32_t tf, D3D12_CPU_DESCRIPTOR_HANDLE slot)
                         if (s.state != D3D12_RESOURCE_STATE_COPY_SOURCE) { bs[nb++] = Transition(s.res.Get(), s.state, D3D12_RESOURCE_STATE_COPY_SOURCE); s.state = D3D12_RESOURCE_STATE_COPY_SOURCE; }
                         if (dsub.state != D3D12_RESOURCE_STATE_COPY_DEST) { bs[nb++] = Transition(dsub.res.Get(), dsub.state, D3D12_RESOURCE_STATE_COPY_DEST); dsub.state = D3D12_RESOURCE_STATE_COPY_DEST; }
                         if (nb) ProbedBarrier(nb, bs, __LINE__);
-                        D3D12_BOX box{ 0, 0, 0, std::min(w, s.w), std::min(h, s.h), 1 };
+                        D3D12_BOX box{ 0, 0, 0, std::min(w, s.w) * s.sx, std::min(h, s.h), 1 };
                         SafeCopyRegion(dsub.res.Get(), s.res.Get(), box, "region derivada");
                         dsub.swapRB = s.swapRB; dsub.endian = s.endian; dsub.frame = s.frame; dsub.memHash = s.memHash; dsub.inMemory = s.inMemory; dsub.gen = s.gen;
                     }
@@ -1727,6 +1758,7 @@ bool BindTexture(uint32_t tf, D3D12_CPU_DESCRIPTOR_HANDLE slot)
             D3D12_SHADER_RESOURCE_VIEW_DESC sd{}; sd.Format = DXGI_FORMAT_B8G8R8A8_UNORM; sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D; sd.Texture2D.MipLevels = 1;
             sd.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(map(swz & 7), map((swz >> 3) & 7), map((swz >> 6) & 7), map((swz >> 9) & 7));
             g_dev->CreateShaderResourceView(r.res.Get(), &sd, slot);
+            g_bindSx = r.sx;
             return true;
         }
         if (last != g_resolvedLast.end() && it == g_resolved.end())
@@ -2167,6 +2199,7 @@ EdramRt* GetEdramRt(uint32_t infoReg = 0x2001)   // RB_COLOR_INFO; MRT: RB_COLOR
         uint32_t ci = Reg(infoReg);
         if ((ci >> 20) & 0x3F && seenBias.size() < 32 && seenBias[ci]++ == 0) LOG("[edram] RB_COLOR_INFO %08X con sesgo de exponente %d (pitch %u)", ci, (int)(((ci >> 20) & 0x3F) ^ 0x20) - 0x20, pitch);
     }
+    const uint32_t wideS = SurfS(pitch);
     { uint32_t sx, sy; MsaaScale(sx, sy); pitch *= sx; }
     static bool only8888 = getenv("NG2_RT8888") != nullptr;   // diagnostico: comportamiento anterior
     if (only8888) xfmt = 0;
@@ -2183,7 +2216,7 @@ EdramRt* GetEdramRt(uint32_t infoReg = 0x2001)   // RB_COLOR_INFO; MRT: RB_COLOR
     if (found != g_edramRts.end()) return &found->second;
     if (g_edramRts.size() >= 60) return nullptr;
     EdramRt& rt = g_edramRts[key];
-    rt.w = pitch; rt.h = 2 * kEdramH; rt.rtv = kFrames + 1 + (UINT)g_edramRts.size(); rt.base = base;
+    rt.w = pitch * wideS; rt.sx = wideS; rt.h = 2 * kEdramH; rt.rtv = kFrames + 1 + (UINT)g_edramRts.size(); rt.base = base;
     rt.xfmt = xfmt; rt.fmt = f; rt.bpp = bpp; rt.outScale = scale;
     D3D12_HEAP_PROPERTIES def{ D3D12_HEAP_TYPE_DEFAULT };
     D3D12_RESOURCE_DESC td{}; td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; td.Width = rt.w; td.Height = rt.h; td.DepthOrArraySize = 1; td.MipLevels = 1;
@@ -2193,7 +2226,7 @@ EdramRt* GetEdramRt(uint32_t infoReg = 0x2001)   // RB_COLOR_INFO; MRT: RB_COLOR
     g_dev->CreateRenderTargetView(rt.res.Get(), nullptr, Rtv(rt.rtv));
     const float black[4] = { 0, 0, 0, 1 };
     g_list->ClearRenderTargetView(Rtv(rt.rtv), black, 0, nullptr);
-    LOG("[edram] nueva superficie: base %u tiles, pitch %u, formato %u (DXGI %d)", base, pitch, xfmt, (int)f);
+    LOG("[edram] nueva superficie: base %u tiles, pitch %u, formato %u (DXGI %d), %ux%u", base, pitch, xfmt, (int)f, rt.w, rt.h);
     return &rt;
 }
 
@@ -2204,13 +2237,14 @@ DepthRt* GetDepthRt()
 {
     uint32_t base = Reg(0x2002) & 0xFFF, pitch = Reg(0x2000) & 0x3FFF;
     if (!pitch) pitch = kRtW;
+    const uint32_t wideS = SurfS(pitch);
     { uint32_t sx, sy; MsaaScale(sx, sy); pitch *= sx; }
     uint32_t key = (base << 16) | pitch;
     auto found = g_depthRts.find(key);
     if (found != g_depthRts.end()) return &found->second;
     if (g_depthRts.size() >= 60) return nullptr;
     DepthRt& d = g_depthRts[key];
-    d.w = pitch; d.h = 2 * kEdramH; d.dsv = (UINT)g_depthRts.size() - 1;
+    d.w = pitch * wideS; d.sx = wideS; d.h = 2 * kEdramH; d.dsv = (UINT)g_depthRts.size() - 1;
     D3D12_HEAP_PROPERTIES def{ D3D12_HEAP_TYPE_DEFAULT };
     D3D12_RESOURCE_DESC td{}; td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; td.Width = d.w; td.Height = d.h; td.DepthOrArraySize = 1; td.MipLevels = 1;
     td.Format = kDepthFmt; td.SampleDesc.Count = 1; td.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
@@ -2489,7 +2523,8 @@ void Resolve()
     int x0 = std::max(0, (int)minx), y0 = std::max(0, (int)miny);
     uint32_t destPitch = destPitchReg & 0x3FFF, destH = (destPitchReg >> 16) & 0x3FFF;
     // Los vertices del rectangulo son inclusivos (0..1279 para 1280 de ancho): se suma 1 y se recorta al destino (sesion 21)
-    int x1 = std::min((int)(rt->w / msx), (int)maxx + 1), y1 = std::min((int)(rt->h / msy), (int)maxy + 1);
+    const uint32_t S = rt->sx;   // sesion 27: escala X de la superficie (panoramico)
+    int x1 = std::min((int)(rt->w / (msx * S)), (int)maxx + 1), y1 = std::min((int)(rt->h / msy), (int)maxy + 1);
     if (destPitch) x1 = std::min(x1, x0 + (int)destPitch);
     if (destH) y1 = std::min(y1, y0 + (int)destH);
     uint32_t fmt = (destInfo >> 7) & 0x3F, endian = destInfo & 7; bool swapRB = (destInfo >> 24) & 1;
@@ -2516,24 +2551,27 @@ void Resolve()
     static bool cpuResolveDepth = getenv("NG2_CPURESOLVE") != nullptr || getenv("NG2_CPUDEPTH") != nullptr;
     if (depthSrc && g_depthCopyPso && !cpuResolveDepth)
     {
-        int dw = std::min(w, (int)(depthSrc->w / msx) - x0), dhh = std::min(h, (int)(depthSrc->h / msy) - y0);
+        const UINT dS = depthSrc->sx;
+        int dw = std::min(w, (int)(depthSrc->w / (msx * dS)) - x0), dhh = std::min(h, (int)(depthSrc->h / msy) - y0);
         if (dw > 0 && dhh > 0)
         {
             uint64_t k = ResolvedKey(destBase, dw, dhh);
             ResolvedDepth& r = g_resolvedDepth[k];
+            if (r.rz && r.sx != dS) { g_deferredRelease[g_fi].push_back(r.rz); g_deferredRelease[g_fi].push_back(r.rp); r.rz.Reset(); r.rp.Reset(); }
             if (!r.rz)
             {
                 static UINT nextRtv = 0;
                 if (nextRtv + 2 > 64) { g_resolvedDepth.erase(k); goto depthCpu; }
                 D3D12_HEAP_PROPERTIES def{ D3D12_HEAP_TYPE_DEFAULT };
-                D3D12_RESOURCE_DESC td{}; td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; td.Width = dw; td.Height = dhh; td.DepthOrArraySize = 1; td.MipLevels = 1;
+                D3D12_RESOURCE_DESC td{}; td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; td.Width = dw * dS; td.Height = dhh; td.DepthOrArraySize = 1; td.MipLevels = 1;
                 td.SampleDesc.Count = 1; td.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
                 td.Format = DXGI_FORMAT_R32_FLOAT;
                 g_dev->CreateCommittedResource(&def, D3D12_HEAP_FLAG_NONE, &td, D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr, IID_PPV_ARGS(&r.rz));
                 td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
                 g_dev->CreateCommittedResource(&def, D3D12_HEAP_FLAG_NONE, &td, D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr, IID_PPV_ARGS(&r.rp));
                 if (!r.rz || !r.rp) { g_resolvedDepth.erase(k); goto depthCpu; }
-                r.w = dw; r.h = dhh; r.rtv = nextRtv; nextRtv += 2; r.state = D3D12_RESOURCE_STATE_RENDER_TARGET;
+                if (r.rtv == 0 && r.w == 0) { r.rtv = nextRtv; nextRtv += 2; }
+                r.w = dw; r.h = dhh; r.sx = dS; r.state = D3D12_RESOURCE_STATE_RENDER_TARGET;
                 UINT inc = g_dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
                 auto h0 = g_rtvHeap2->GetCPUDescriptorHandleForHeapStart(); h0.ptr += r.rtv * inc;
                 g_dev->CreateRenderTargetView(r.rz.Get(), nullptr, h0); h0.ptr += inc;
@@ -2560,13 +2598,13 @@ void Resolve()
                 D3D12_CPU_DESCRIPTOR_HANDLE rtvs[2] = { h0, h0 }; rtvs[1].ptr += inc;
                 g_list->OMSetRenderTargets(2, rtvs, FALSE, nullptr);
                 g_boundRt = nullptr;
-                D3D12_VIEWPORT vp{ 0, 0, (float)dw, (float)dhh, 0, 1 }; D3D12_RECT sr{ 0, 0, dw, dhh };
+                D3D12_VIEWPORT vp{ 0, 0, (float)(dw * dS), (float)dhh, 0, 1 }; D3D12_RECT sr{ 0, 0, (LONG)(dw * dS), dhh };
                 g_list->RSSetViewports(1, &vp); g_list->RSSetScissorRects(1, &sr);
                 g_list->SetPipelineState(g_depthCopyPso.Get());
                 g_list->SetGraphicsRootSignature(g_depthCopyRootSig.Get());
                 ID3D12DescriptorHeap* heaps[] = { g_srvHeap.Get() };
                 g_list->SetDescriptorHeaps(1, heaps);
-                int consts[4] = { x0 * (int)msx, y0 * (int)msy, (int)msx, (int)msy };
+                int consts[4] = { x0 * (int)(msx * dS), y0 * (int)msy, (int)msx, (int)msy };
                 g_list->SetGraphicsRoot32BitConstants(0, 4, consts, 0);
                 g_list->SetGraphicsRootDescriptorTable(1, SrvGpu(dslot));
                 g_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -2587,12 +2625,13 @@ depthCpu:
     {
         FlushPendingResolves();
         g_resolvedDepthLast.erase(destBase & 0xFFFFF000);
-        int dw = std::min(w, (int)(depthSrc->w / msx) - x0), dhh = std::min(h, (int)(depthSrc->h / msy) - y0);
+        const UINT dS = depthSrc->sx;
+        int dw = std::min(w, (int)(depthSrc->w / (msx * dS)) - x0), dhh = std::min(h, (int)(depthSrc->h / msy) - y0);
         // D3D12 no permite copiar una region parcial de una textura de profundidad/stencil (E_INVALIDARG al cerrar la lista y,
         // sin capa de depuracion, GPU colgada): se copia el plano entero y se lee desde el origen (sesion 8 de NG2)
         const UINT fullW = depthSrc->w, fullH = depthSrc->h;
         UINT rowPitch = (fullW * 4 + 255) & ~255u;
-        const size_t org = size_t(y0 * msy) * rowPitch + size_t(x0 * msx) * 4;
+        const size_t org = size_t(y0 * msy) * rowPitch + size_t(x0 * msx * dS) * 4;
         auto a = Transition(depthSrc->res.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_COPY_SOURCE); ProbedBarrier(1, &a, __LINE__);
         DXGI_FORMAT planeFmt = DXGI_FORMAT_R32_TYPELESS;
         if (!g_depth32)
@@ -2616,8 +2655,8 @@ depthCpu:
             for (int x = 0; x < dw && (uint32_t)x < destPitch; x++)
             {
                 uint32_t v;
-                if (g_depth32) { float z; memcpy(&z, p + org + (y * msy) * rowPitch + (x * msx) * 4, 4); v = (uint32_t)(std::clamp(z, 0.0f, 1.0f) * 16777215.0f + 0.5f) << 8; }
-                else { uint32_t raw; memcpy(&raw, p + org + (y * msy) * rowPitch + (x * msx) * 4, 4); v = (raw & 0xFFFFFF) << 8; }
+                if (g_depth32) { float z; memcpy(&z, p + org + (y * msy) * rowPitch + (x * msx * dS) * 4, 4); v = (uint32_t)(std::clamp(z, 0.0f, 1.0f) * 16777215.0f + 0.5f) << 8; }
+                else { uint32_t raw; memcpy(&raw, p + org + (y * msy) * rowPitch + (x * msx * dS) * 4, 4); v = (raw & 0xFFFFFF) << 8; }
                 *(uint32_t*)(out + TiledInner((uint32_t)x, (uint32_t)y, 2, outer)) = endian <= 3 ? Swap32(v, endian) : v;
             }
         }
@@ -2696,14 +2735,14 @@ depthCpu:
                 LOG("[texage] resolve -> %08X en el frame %llu: %ux%u desde base %u (rect %d,%d-%d,%d), gpu %d", destBase, (unsigned long long)g_frameCounter, w, h, rt->base, x0, y0, x1, y1, (int)gpuPath);
         }
         DXGI_FORMAT resFmt = gpuTexFmt == 4 ? DXGI_FORMAT_B5G6R5_UNORM : gpuTexFmt == 32 ? DXGI_FORMAT_R16G16B16A16_FLOAT : gpuTexFmt == 36 ? DXGI_FORMAT_R32_FLOAT : gpuTexFmt == 25 ? (g_1616Sat ? DXGI_FORMAT_R16G16_UNORM : DXGI_FORMAT_R16G16_FLOAT) : DXGI_FORMAT_B8G8R8A8_UNORM;
-        if (r.res && (r.fmt != resFmt || (gpuShader && r.rtv == ~0u) || r.w != (UINT)w || r.h != (UINT)h))
+        if (r.res && (r.fmt != resFmt || (gpuShader && r.rtv == ~0u) || r.w != (UINT)w || r.h != (UINT)h || r.sx != S))
         {   // otro formato o hace falta poder dibujar en ella: se recrea (el recurso viejo se libera cuando la GPU acabe el frame)
             g_deferredRelease[g_fi].push_back(r.res); r.res.Reset();
         }
         if (!r.res)
         {
             D3D12_HEAP_PROPERTIES def{ D3D12_HEAP_TYPE_DEFAULT };
-            D3D12_RESOURCE_DESC td{}; td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; td.Width = w; td.Height = h; td.DepthOrArraySize = 1; td.MipLevels = 1;
+            D3D12_RESOURCE_DESC td{}; td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; td.Width = w * S; td.Height = h; td.DepthOrArraySize = 1; td.MipLevels = 1;
             td.Format = resFmt; td.SampleDesc.Count = 1;
             bool wantRt = gpuShader;
             if (wantRt && r.rtv == ~0u && g_rtvHeap3Next >= kRtvHeap3Size) wantRt = false;   // sin RTV libres
@@ -2724,7 +2763,7 @@ depthCpu:
                     }
                 }
             }
-            r.w = w; r.h = h; r.state = D3D12_RESOURCE_STATE_COPY_DEST;
+            r.w = w; r.h = h; r.sx = S; r.state = D3D12_RESOURCE_STATE_COPY_DEST;
             if (!gpuPath) { g_resolvedLast.erase(destBase & 0xFFFFF000); g_resolved.erase(rkey2); }
         }
         if (gpuPath && gpuShader)
@@ -2744,14 +2783,14 @@ depthCpu:
             auto h0 = g_rtvHeap3->GetCPUDescriptorHandleForHeapStart(); h0.ptr += rr.rtv * inc;
             g_list->OMSetRenderTargets(1, &h0, FALSE, nullptr);
             g_boundRt = nullptr;
-            D3D12_VIEWPORT vp{ 0, 0, (float)w, (float)h, 0, 1 }; D3D12_RECT sr{ 0, 0, w, h };
+            D3D12_VIEWPORT vp{ 0, 0, (float)(w * S), (float)h, 0, 1 }; D3D12_RECT sr{ 0, 0, (LONG)(w * S), h };
             g_list->RSSetViewports(1, &vp); g_list->RSSetScissorRects(1, &sr);
             g_list->SetPipelineState(gpuTexFmt == 25 ? (g_1616Sat ? g_colorResolvePso1616.Get() : g_colorResolvePso1616F.Get()) : gpuTexFmt == 32 ? g_colorResolvePso16F.Get() : gpuTexFmt == 4 ? g_colorResolvePso565.Get() : g_colorResolvePso.Get());
             g_list->SetGraphicsRootSignature(g_colorResolveRootSig.Get());
             ID3D12DescriptorHeap* heaps[] = { g_srvHeap.Get() };
             g_list->SetDescriptorHeaps(1, heaps);
             static bool noAvgS = getenv("NG2_NOSAMPLEAVG") != nullptr;
-            int consts[8] = { x0 * (int)msx, y0 * (int)msy, (int)msx, (int)msy, noAvgS ? 0 : (int)((ctrl >> 4) & 7), gpuTexFmt == 25 ? (g_1616Sat ? 1 : 2) : 0, 0, 0 };
+            int consts[8] = { x0 * (int)(msx * S), y0 * (int)msy, (int)msx, (int)msy, noAvgS ? 0 : (int)((ctrl >> 4) & 7), gpuTexFmt == 25 ? (g_1616Sat ? 1 : 2) : 0, 0, 0 };
             g_list->SetGraphicsRoot32BitConstants(0, 8, consts, 0);
             g_list->SetGraphicsRootDescriptorTable(1, SrvGpu(dslot));
             g_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -2764,7 +2803,7 @@ depthCpu:
             ResolvedTex& rr = g_resolved[rkey2];
             if (rr.state != D3D12_RESOURCE_STATE_COPY_DEST) { auto b0 = Transition(rr.res.Get(), rr.state, D3D12_RESOURCE_STATE_COPY_DEST); ProbedBarrier(1, &b0, __LINE__); rr.state = D3D12_RESOURCE_STATE_COPY_DEST; }
             auto a = Transition(rt->res.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE); ProbedBarrier(1, &a, __LINE__);
-            D3D12_BOX box{ (UINT)x0, (UINT)y0, 0, (UINT)x1, (UINT)y1, 1 };
+            D3D12_BOX box{ (UINT)x0 * S, (UINT)y0, 0, (UINT)x1 * S, (UINT)y1, 1 };
             SafeCopyRegion(rr.res.Get(), rt->res.Get(), box, "resolve");
             auto b = Transition(rt->res.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET); ProbedBarrier(1, &b, __LINE__);
         }
@@ -2807,7 +2846,8 @@ depthCpu:
             D3D12_HEAP_PROPERTIES rb{ D3D12_HEAP_TYPE_READBACK };
             g_dev->CreateCommittedResource(&rb, D3D12_HEAP_FLAG_NONE, &bd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&g_readback));
         }
-        UINT rowPitch = ((UINT)(w * msx) * rt->bpp + 255) & ~255u;
+        const UINT msxS = msx * S;   // sesion 27: en la superficie panoramica cada pixel del juego son msx * S columnas
+        UINT rowPitch = ((UINT)(w * msxS) * rt->bpp + 255) & ~255u;
         // Desactivado por defecto: con el diferido el juego se cerraba al cargar un escenario (las copias tardias llegan
         // despues de que el juego reutiliza esa memoria). NG2_DEFERRESOLVE=1 lo activa (experimental).
         static const bool noDefer = getenv("NG2_DEFERRESOLVE") == nullptr;
@@ -2829,10 +2869,10 @@ depthCpu:
         }
         else FlushPendingResolves();
         auto a = Transition(rt->res.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE); ProbedBarrier(1, &a, __LINE__);
-        D3D12_TEXTURE_COPY_LOCATION dst{ defer ? g_readbackDefer.Get() : g_readback.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT }; dst.PlacedFootprint.Footprint = { rt->fmt, (UINT)(w * msx), (UINT)(h * msy), 1, rowPitch };
+        D3D12_TEXTURE_COPY_LOCATION dst{ defer ? g_readbackDefer.Get() : g_readback.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT }; dst.PlacedFootprint.Footprint = { rt->fmt, (UINT)(w * msxS), (UINT)(h * msy), 1, rowPitch };
         dst.PlacedFootprint.Offset = rbOff;
         D3D12_TEXTURE_COPY_LOCATION sl{ rt->res.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX }; sl.SubresourceIndex = 0;
-        D3D12_BOX box{ (UINT)(x0 * msx), (UINT)(y0 * msy), 0, (UINT)(x1 * msx), (UINT)(y1 * msy), 1 };
+        D3D12_BOX box{ (UINT)(x0 * msxS), (UINT)(y0 * msy), 0, (UINT)(x1 * msxS), (UINT)(y1 * msy), 1 };
         g_list->CopyTextureRegion(&dst, 0, 0, 0, &sl, &box);
         auto b = Transition(rt->res.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET); ProbedBarrier(1, &b, __LINE__);
         const UINT rtBpp = rt->bpp; const DXGI_FORMAT rtFmt = rt->fmt;
@@ -2846,7 +2886,7 @@ depthCpu:
             uint32_t outer = TiledOuter((uint32_t)y, pitchAligned, log2d);
             for (int x = 0; x < w && (uint32_t)x < destPitch; x++)
             {
-                const uint8_t* px = p + (y * msy) * rowPitch + (x * msx) * rtBpp;   // una muestra por pixel
+                const uint8_t* px = p + (y * msy) * rowPitch + (x * msxS) * rtBpp;   // una muestra por pixel
                 // Sesion 24 (como Xenia): RB_COPY_CONTROL bits 4-6 = muestra a copiar; 4 = media de 0/1, 5 = media de 2/3,
                 // 6 = media de las 4. El juego reduce la escena a la mitad reinterpretandola como MSAA 4x con media.
                 uint8_t avgPx[16];
@@ -2947,7 +2987,7 @@ depthCpu:
     {
         uint32_t c = Reg(0x231E);
         float col[4] = { ((c >> 16) & 0xFF) / 255.0f, ((c >> 8) & 0xFF) / 255.0f, (c & 0xFF) / 255.0f, (c >> 24) / 255.0f };
-        D3D12_RECT r{ (LONG)(x0 * msx), (LONG)(y0 * msy), (LONG)(x1 * msx), (LONG)std::min<uint32_t>(y1 * msy, rt->h) };
+        D3D12_RECT r{ (LONG)(x0 * msx * S), (LONG)(y0 * msy), (LONG)(x1 * msx * S), (LONG)std::min<uint32_t>(y1 * msy, rt->h) };
         g_list->ClearRenderTargetView(Rtv(rt->rtv), col, 1, &r);
     }
     // Clear de profundidad/stencil (RB_COPY_CONTROL bit 9, valor en RB_DEPTH_CLEAR 0x231D)
@@ -2957,7 +2997,7 @@ depthCpu:
         {
             uint32_t v = Reg(0x231D);
             float z = DecodeDepth24(v >> 8, (Reg(0x2002) >> 16) & 1);
-            D3D12_RECT r{ (LONG)(x0 * msx), (LONG)(y0 * msy), std::min((LONG)(x1 * msx), (LONG)dr->w), std::min((LONG)(y1 * msy), (LONG)dr->h) };
+            D3D12_RECT r{ (LONG)(x0 * msx * dr->sx), (LONG)(y0 * msy), std::min((LONG)(x1 * msx * dr->sx), (LONG)dr->w), std::min((LONG)(y1 * msy), (LONG)dr->h) };
             g_list->ClearDepthStencilView(Dsv(dr->dsv), D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, z, (UINT8)(v & 0xFF), 1, &r);
             static int logged = 0;
             if (logged < 6) { logged++; LOG("[edram] clear de profundidad %08X -> z=%g stencil=%u rect=(%d,%d)-(%d,%d)", v, z, v & 0xFF, x0, y0, x1, y1); }
@@ -2979,8 +3019,9 @@ static void WriteBackResolved(ResolvedTex& r)
     FlushPendingResolves();
     if (r.state != D3D12_RESOURCE_STATE_COPY_SOURCE) { auto b = Transition(r.res.Get(), r.state, D3D12_RESOURCE_STATE_COPY_SOURCE); ProbedBarrier(1, &b, __LINE__); r.state = D3D12_RESOURCE_STATE_COPY_SOURCE; }
     const UINT bpp = r.texFmt == 32 ? 8u : r.texFmt == 4 ? 2u : 4u;   // sesion 16 de NG2: k_16_16_16_16_FLOAT (8 bytes por pixel); 19: 5_6_5
-    UINT rowPitch = (r.w * bpp + 255) & ~255u;
-    D3D12_TEXTURE_COPY_LOCATION dst{ g_readback.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT }; dst.PlacedFootprint.Footprint = { r.fmt, r.w, r.h, 1, rowPitch };
+    const UINT rsx = r.sx ? r.sx : 1;   // sesion 27: recurso panoramico (w * sx de ancho): se toma una columna de cada sx
+    UINT rowPitch = (r.w * rsx * bpp + 255) & ~255u;
+    D3D12_TEXTURE_COPY_LOCATION dst{ g_readback.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT }; dst.PlacedFootprint.Footprint = { r.fmt, r.w * rsx, r.h, 1, rowPitch };
     D3D12_TEXTURE_COPY_LOCATION sl{ r.res.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX }; sl.SubresourceIndex = 0;
     g_list->CopyTextureRegion(&dst, 0, 0, 0, &sl, nullptr);
     FlushAndWait();
@@ -2995,7 +3036,7 @@ static void WriteBackResolved(ResolvedTex& r)
             uint32_t outer = TiledOuter(y, pitchAligned, 1);
             for (uint32_t x = 0; x < r.w && x < r.destPitch; x++)
             {
-                uint16_t v = *(const uint16_t*)(p + y * rowPitch + x * 2);
+                uint16_t v = *(const uint16_t*)(p + y * rowPitch + x * rsx * 2);
                 if (r.swapRB) v = (uint16_t)(((v & 0x1F) << 11) | (v & 0x07E0) | (v >> 11));
                 if (r.endian == 1 || r.endian == 2) v = __builtin_bswap16(v);
                 *(uint16_t*)(out + TiledInner(x, y, 1, outer)) = v;
@@ -3012,7 +3053,7 @@ static void WriteBackResolved(ResolvedTex& r)
             uint32_t outer = TiledOuter(y, pitchAligned, 3);
             for (uint32_t x = 0; x < r.w && x < r.destPitch; x++)
             {
-                const uint32_t* px = (const uint32_t*)(p + y * rowPitch + x * 8);
+                const uint32_t* px = (const uint32_t*)(p + y * rowPitch + x * rsx * 8);
                 uint32_t* o = (uint32_t*)(out + TiledInner(x, y, 3, outer));
                 o[0] = Swap32(px[0], r.endian); o[1] = Swap32(px[1], r.endian);
             }
@@ -3028,7 +3069,7 @@ static void WriteBackResolved(ResolvedTex& r)
             uint32_t outer = TiledOuter(y, pitchAligned, r.texFmt == 2 ? 0 : 2);
             for (uint32_t x = 0; x < r.w && x < r.destPitch; x++)
             {
-                const uint8_t* px = p + y * rowPitch + x * 4;
+                const uint8_t* px = p + y * rowPitch + x * rsx * 4;
                 if (r.texFmt == 2) *(out + TiledInner(x, y, 0, outer)) = px[2];
                 else if (r.fmt == DXGI_FORMAT_R16G16_FLOAT)
                 {   // 16_16 sin recortar (sesion 24): en memoria, entero de 16 bits con 0x7FFF = 32 (como Xenia)
@@ -3055,7 +3096,7 @@ static void WriteBackResolved(ResolvedTex& r)
         uint32_t outer = TiledOuter(y, pitchAligned, 2);
         for (uint32_t x = 0; x < r.w && x < r.destPitch; x++)
         {
-            const uint8_t* px = p + y * rowPitch + x * 4;
+            const uint8_t* px = p + y * rowPitch + x * rsx * 4;
             uint32_t v = r.swapRB ? (px[0] | (px[1] << 8) | (px[2] << 16) | (px[3] << 24)) : (px[2] | (px[1] << 8) | (px[0] << 16) | (px[3] << 24));
             *(uint32_t*)(out + TiledInner(x, y, 2, outer)) = r.endian <= 3 ? Swap32(v, r.endian) : v;
         }
@@ -3074,13 +3115,15 @@ static void DumpResolvedTex(ResolvedTex& r, const char* tag)
 {
     if (!r.res || !g_readback) return;
     if (r.state != D3D12_RESOURCE_STATE_COPY_SOURCE) { auto b = Transition(r.res.Get(), r.state, D3D12_RESOURCE_STATE_COPY_SOURCE); ProbedBarrier(1, &b, __LINE__); r.state = D3D12_RESOURCE_STATE_COPY_SOURCE; }
-    UINT rowPitch = (r.w * 4 + 255) & ~255u;
-    D3D12_TEXTURE_COPY_LOCATION dst{ g_readback.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT }; dst.PlacedFootprint.Footprint = { r.fmt, r.w, r.h, 1, rowPitch };
+    const UINT rw = r.w * (r.sx ? r.sx : 1);
+    UINT rowPitch = (rw * 4 + 255) & ~255u;
+    D3D12_TEXTURE_COPY_LOCATION dst{ g_readback.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT }; dst.PlacedFootprint.Footprint = { r.fmt, rw, r.h, 1, rowPitch };
     D3D12_TEXTURE_COPY_LOCATION sl{ r.res.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX }; sl.SubresourceIndex = 0;
     g_list->CopyTextureRegion(&dst, 0, 0, 0, &sl, nullptr);
     FlushAndWait();
     uint8_t* p = nullptr; g_readback->Map(0, nullptr, (void**)&p);
     if (!p) return;
+    const UINT rsx = r.sx ? r.sx : 1;
     for (int pass = 0; pass < 2; pass++)
     {
         char name[96]; snprintf(name, sizeof(name), "res_%s_%08X%s.bmp", tag, r.destBase, pass ? "_alfa" : "");
@@ -3094,7 +3137,7 @@ static void DumpResolvedTex(ResolvedTex& r, const char* tag)
             for (UINT y = 0; y < r.h; y++)
             {
                 const uint8_t* s = p + y * rowPitch;
-                for (UINT x = 0; x < r.w; x++) { uint8_t a = s[x * 4 + 3]; if (pass) { row[x*4] = row[x*4+1] = row[x*4+2] = a; } else { row[x*4] = s[x*4]; row[x*4+1] = s[x*4+1]; row[x*4+2] = s[x*4+2]; } row[x*4+3] = 255; }
+                for (UINT x = 0; x < r.w; x++) { const uint8_t* s0 = s; const uint8_t* s = s0 + x * rsx * 4 - x * 4; uint8_t a = s[x * 4 + 3]; if (pass) { row[x*4] = row[x*4+1] = row[x*4+2] = a; } else { row[x*4] = s[x*4]; row[x*4+1] = s[x*4+1]; row[x*4+2] = s[x*4+2]; } row[x*4+3] = 255; }
                 fwrite(row.data(), 1, row.size(), f);
             }
             fclose(f);
@@ -3593,7 +3636,20 @@ static void D3D12DrawImpl(const XenosDraw& d)
     // Sesion 25: tipo de GS: 1 = rect list, 2 = interfaz panoramica (superficie final de 1280 en 8888), 3 = las dos cosas
     int gsKind = rect ? 1 : 0;
     if ((Reg(0x2000) & 0x3FFF) == 1120 && (dc & 2)) g_frameHasScene = true;   // sesion 27: escena 3D = draws con prueba de profundidad en la superficie de la escena (los menus 2D no la usan)
-    if (PanoActive() && g_uiGs && g_rectGsPano && ttype == D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE && (((Reg(0x2000) & 0x3FFF) == 1280 && curRt->xfmt == 0) || (Reg(0x2000) & 0x3FFF) == 1120)) gsKind |= 2;   // sesion 27: el HUD se dibuja sobre la escena (1120)
+    // Sesion 27 (2): los draws que leen una textura resuelta en este frame o el anterior (la escena) no son interfaz. El juego
+    // compone la escena HDR en 1120 con una rejilla de 16 quads: el GS comprimia los del centro y dejaba los de los bordes a su
+    // tamano (laterales "estirados", sin continuidad con el centro).
+    bool readsResolved = false;
+    if (PanoActive())
+        for (uint32_t t = 0; t < 16 && !readsResolved; t++)
+        {
+            if (!(ps.info.textureMask & (1u << t)) || (Reg(0x4800 + t * 6) & 3) != 2) continue;
+            uint32_t tb = Reg(0x4800 + t * 6 + 1) & 0xFFFFF000;
+            auto lr = g_resolvedLast.find(tb);
+            if (lr != g_resolvedLast.end()) { auto ri = g_resolved.find(lr->second); if (ri != g_resolved.end() && g_frameCounter - ri->second.frame <= 1) readsResolved = true; }
+            if (!readsResolved && g_resolvedDepthLast.count(tb)) readsResolved = true;
+        }
+    if (PanoActive() && !readsResolved && g_uiGs && g_rectGsPano && ttype == D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE && (((Reg(0x2000) & 0x3FFF) == 1280 && curRt->xfmt == 0) || (Reg(0x2000) & 0x3FFF) == 1120)) gsKind |= 2;   // sesion 27: el HUD se dibuja sobre la escena (1120)
     uint64_t key = (uint64_t(gsKind) * 0x2545F4914F6CDD1Dull) ^ d.vsHash * 31 ^ d.psHash ^ (uint64_t(d.primType) << 56) ^ (uint64_t(bc) << 8) ^ (uint64_t(colorMask) << 48)
                  ^ ((uint64_t(useDepth ? dc : 0) * 0x9E3779B97F4A7C15ull) ^ (uint64_t(sc) << 60)) ^ (uint64_t(curRt->fmt) * 0xC2B2AE3D27D4EB4Full)
                  ^ (rt1 ? ((uint64_t(rt1->fmt) + 1) * 0x165667B19E3779F9ull ^ (uint64_t(mask1) << 36) ^ (uint64_t(bc1) * 0x27D4EB2F165667C5ull)) : 0);
@@ -3713,7 +3769,10 @@ static void D3D12DrawImpl(const XenosDraw& d)
             static bool noPgen = getenv("NG2_NOPARAMGEN") != nullptr;
             uint32_t pg = (Reg(0x2181) >> 8) & 0xFF;
             v[14] = (!noPgen && ((Reg(0x2180) >> 18) & 1) && pg < 16) ? (float)pg : -1.0f;
-            uint32_t pmx, pmy; MsaaScale(pmx, pmy); v[15] = (float)(pmx * 8 + pmy);
+            uint32_t pmx, pmy; MsaaScale(pmx, pmy);
+            static const bool pgenHalf = getenv("NG2_PGENHALF") != nullptr;   // diagnostico: X - 0.5 (si el juego suma medio pixel)
+            const uint32_t pws = curRt->sx;   // sesion 27: superficie panoramica (bit 6 = X sin redondear, bit 7 = X - 0.5)
+            v[15] = (float)(pmx * pws * 8 + pmy + (pws > 1 ? 64u + (pgenHalf ? 128u : 0u) : 0u));
         }
         { uint32_t* lp = (uint32_t*)(p + 4320); for (uint32_t i = 0; i < 32; i++) lp[i] = Reg(0x4908 + i); }
         {   // XTexMode[16] (sesion 24): x = clamp_x | clamp_y << 3 | clamp_z << 6, y = filtro de ampliacion, z = de reduccion, w = color de borde
@@ -3940,7 +3999,7 @@ static void D3D12DrawImpl(const XenosDraw& d)
         uint32_t dw = ((uint32_t)(std::clamp(z, 0.0f, 1.0f) * 16777215.0f + 0.5f) << 8) | stencil;
         // Disposicion de k_8_8_8_8 en la EDRAM: R en los bits 0-7 ... A en 24-31
         float col[4] = { (dw & 0xFF) / 255.0f, ((dw >> 8) & 0xFF) / 255.0f, ((dw >> 16) & 0xFF) / 255.0f, (dw >> 24) / 255.0f };
-        uint32_t amsx, amsy; MsaaScale(amsx, amsy);
+        uint32_t amsx, amsy; MsaaScale(amsx, amsy); amsx *= rt->sx;
         int wox, woy; WindowOffset(wox, woy);
         D3D12_RECT r{ (LONG)std::max(0.0f, (minx + 0.5f + wox) * amsx), (LONG)std::max(0.0f, (miny + 0.5f + woy) * amsy),
                       (LONG)std::min((float)rt->w, (maxx + 0.5f + wox) * amsx), (LONG)std::min((float)rt->h, (maxy + 0.5f + woy) * amsy) };
@@ -3973,8 +4032,16 @@ static void D3D12DrawImpl(const XenosDraw& d)
         tlx = std::max(tlx, s15(stl & 0x7FFF)); tly = std::max(tly, s15((stl >> 16) & 0x7FFF));
         brx = std::min(brx, s15(sbr & 0x7FFF)); bry = std::min(bry, s15((sbr >> 16) & 0x7FFF));
         tlx = std::max(tlx, 0); tly = std::max(tly, 0); brx = std::max(brx, tlx); bry = std::max(bry, tly);
-        sr.left = std::min<LONG>(tlx * (LONG)msx, (LONG)rt->w); sr.top = std::min<LONG>(tly * (LONG)msy, (LONG)rt->h);
-        sr.right = std::min<LONG>(brx * (LONG)msx, (LONG)rt->w); sr.bottom = std::min<LONG>(bry * (LONG)msy, (LONG)rt->h);
+        const LONG msxS = (LONG)(msx * rt->sx);   // sesion 27: superficie panoramica
+        sr.left = std::min<LONG>(tlx * msxS, (LONG)rt->w); sr.top = std::min<LONG>(tly * (LONG)msy, (LONG)rt->h);
+        sr.right = std::min<LONG>(brx * msxS, (LONG)rt->w); sr.bottom = std::min<LONG>(bry * (LONG)msy, (LONG)rt->h);
+        // La interfaz comprimida al centro por el GS: su recorte tambien (salvo el de pantalla completa)
+        if ((gsKind & 2) && (sr.left > 0 || sr.right < (LONG)rt->w))
+        {
+            static const float kxs = PanoAspect() / (16.0f / 9.0f);
+            const float c = rt->w * 0.5f;
+            sr.left = (LONG)std::floor(c + (sr.left - c) / kxs); sr.right = (LONG)std::ceil(c + (sr.right - c) / kxs);
+        }
     }
     PROBED(RSSetViewports(1, &vp)); PROBED(RSSetScissorRects(1, &sr));
     g_list->SetPipelineState(pso.Get());
@@ -3997,6 +4064,7 @@ static void D3D12DrawImpl(const XenosDraw& d)
             for (uint32_t t = 0; t < 16; t++)
             {
                 bool ok = (ps.info.textureMask & (1u << t)) && !noTex && BindTexture(t, SrvCpu(baseSlot + t));
+                if (ok && g_bindSx > 1) ((uint32_t*)(g_ringMap[g_fi] + psCbOff + 4448))[t * 4 + 2] |= (g_bindSx * 16u) << 8;   // sesion 27
                 if (!ok) g_dev->CreateShaderResourceView(g_white.Get(), nullptr, SrvCpu(baseSlot + t));
                 // Huecos 3D (t17-t32): textura de volumen o, si no hay, un SRV nulo 3D
                 bool ok3 = (ps.info.texture3DMask & (1u << t)) && !noTex && BindTexture3D(t, SrvCpu(baseSlot + 16 + t));
@@ -4065,7 +4133,7 @@ static void D3D12DrawImpl(const XenosDraw& d)
                     g_boundRt = nullptr;
                     D3D12_VIEWPORT zvp{ 0, 0, (float)rt->w, (float)rt->h, 0, 1 };
                     PROBED(RSSetViewports(1, &zvp)); PROBED(RSSetScissorRects(1, &sr));
-                    g_list->SetPipelineState(g_colorToDepthPso.Get());
+                    g_list->SetPipelineState(rt->sx > 1 && g_colorToDepthPsoK ? g_colorToDepthPsoK.Get() : g_colorToDepthPso.Get());
                     g_list->SetGraphicsRootSignature(g_colorToDepthRootSig.Get());
                     ID3D12DescriptorHeap* zheaps[] = { g_srvHeap.Get() };
                     g_list->SetDescriptorHeaps(1, zheaps);
@@ -4158,13 +4226,14 @@ bool D3D12PresentResolved(HWND hwnd, uint32_t fb, std::vector<uint32_t>* readbac
     ResolvedTex& r = it->second;
     OpenFrame();
     UINT fi = g_fi;
-    outW = r.w; outH = r.h;
+    const UINT rw = r.w * (r.sx ? r.sx : 1);   // sesion 27: frontbuffer panoramico (mas ancho)
+    outW = rw; outH = r.h;
     if (readback)
     {
         // Copia a la CPU para la captura
         if (r.state != D3D12_RESOURCE_STATE_COPY_SOURCE) { auto b = Transition(r.res.Get(), r.state, D3D12_RESOURCE_STATE_COPY_SOURCE); ProbedBarrier(1, &b, __LINE__); r.state = D3D12_RESOURCE_STATE_COPY_SOURCE; }
-        UINT rowPitch = (r.w * 4 + 255) & ~255u;
-        D3D12_TEXTURE_COPY_LOCATION dst{ g_readback.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT }; dst.PlacedFootprint.Footprint = { DXGI_FORMAT_B8G8R8A8_UNORM, r.w, r.h, 1, rowPitch };
+        UINT rowPitch = (rw * 4 + 255) & ~255u;
+        D3D12_TEXTURE_COPY_LOCATION dst{ g_readback.Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT }; dst.PlacedFootprint.Footprint = { DXGI_FORMAT_B8G8R8A8_UNORM, rw, r.h, 1, rowPitch };
         D3D12_TEXTURE_COPY_LOCATION sl{ r.res.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX }; sl.SubresourceIndex = 0;
         EnsureReadback();   // sesion 19: sin resolves por CPU no existia y las capturas salian negras
         dst.pResource = g_readback.Get();
@@ -4175,14 +4244,14 @@ bool D3D12PresentResolved(HWND hwnd, uint32_t fb, std::vector<uint32_t>* readbac
             uint8_t* p = nullptr; g_readback->Map(0, nullptr, (void**)&p);
             if (p)
             {
-                readback->resize(size_t(r.w) * r.h);
+                readback->resize(size_t(rw) * r.h);
                 for (UINT y = 0; y < r.h; y++)
-                    for (UINT x = 0; x < r.w; x++)
+                    for (UINT x = 0; x < rw; x++)
                     {
                         const uint8_t* px = p + y * rowPitch + x * 4;   // B G R A del RT
                         // Igual que el camino por memoria: con swapRB la imagen sale con los colores del RT; sin el, con R y B cambiados
                         uint32_t b = r.swapRB ? px[0] : px[2], g = px[1], rr = r.swapRB ? px[2] : px[0];
-                        (*readback)[size_t(y) * r.w + x] = b | (g << 8) | (rr << 16) | 0xFF000000u;
+                        (*readback)[size_t(y) * rw + x] = b | (g << 8) | (rr << 16) | 0xFF000000u;
                     }
                 g_readback->Unmap(0, nullptr);
             }

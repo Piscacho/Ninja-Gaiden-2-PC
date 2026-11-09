@@ -111,5 +111,13 @@ tipo 000B0000, «Ninja Gaiden 2 Title Update #2», título 544307D5, media ID 69
 - Panorámico: solo en los frames con escena 3D (draws con prueba de profundidad en la superficie de la escena, pitch 1120; margen
   de 30 frames). Vídeos, menús y pantallas de carga se presentan a 16:9 con bandas negras. El GS de la interfaz también actúa en la
   superficie de 1120 (el HUD se dibuja ahí) y con las listas de quads expandidas (antes la barra de vida no se comprimía).
-- Pendiente: la imagen interna sigue siendo 1280x720 estirada a lo ancho (en 5120x1440 se nota borrosa): haría falta renderizar
-  más ancho (superficies EDRAM del host × kx), como en GH.
+- Panorámico nítido (como GH): las superficies de pitch 1120/560/280/1280/640/320 se crean S veces más anchas (S = kx redondeado
+  hacia arriba: 2 en 21:9 y 32:9 → 2560x720 internos). Viewport, recortes, borrados, resolves y copias de profundidad en píxeles
+  de superficie; ResolvedTex/ResolvedDepth.sx (regiones derivadas, volcado a memoria y capturas toman una columna de cada sx);
+  lecturas en texeles con la escala en XTexMode.z bits 8-15 (x16); PsParamGen en X sin redondear (bit 6 de XAlpha.w; bit 7 =
+  X - 0.5 con NG2_PGENHALF=1); color→profundidad con columnas de 40·S. El HLSL solo cambia con S > 1 (16:9 conserva la caché).
+  NG2_PANOSTRETCH=1 = antes.
+- Causa de los laterales "estirados" que vio el usuario: el juego compone la escena HDR en 1120 con una rejilla de 16 quads y el GS
+  de interfaz (activado en 1120 para el HUD) comprimía los del centro y dejaba los de los bordes a su tamaño. Ahora los draws que
+  leen una textura resuelta en este frame o el anterior nunca pasan por el GS de interfaz. Verificado 32:9 y 21:9 en combate
+  (imagen continua, sin rayas en personajes, 60 fps) y menú a 16:9 con bandas.
