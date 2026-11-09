@@ -114,9 +114,21 @@ void AudioSubmitXenonFrame(const uint8_t* src)
         float R = ch(1, i) + c + ch(5, i) * 0.7071f;
         if (g_count >= kMaxLatencyFrames) { g_read = (g_read + 1) % kRingFrames; g_count--; g_drops++; }
         size_t w = (g_read + g_count) % kRingFrames;
+        g_peak = std::max(g_peak, std::max(std::fabs(L), std::fabs(R)));   // pico de la mezcla (antes del limitador)
+        // Sesion 27: limitador suave. La mezcla 5.1 -> estereo (FL + 0,71 C + 0,71 BL) pasa de 1 en combate (picos de 1,5 en la
+        // partida del usuario) y el recorte duro sonaba a chasquidos/distorsion. Ataque inmediato, recuperacion en ~50 ms.
+        // NG2_NOLIMITER=1 = recorte duro (antes).
+        static const bool noLim = getenv("NG2_NOLIMITER") != nullptr;
+        static float limGain = 1.0f;
+        if (!noLim)
+        {
+            const float pk = std::max(std::fabs(L), std::fabs(R)), ceilv = 0.95f;
+            const float target = pk > ceilv ? ceilv / pk : 1.0f;
+            if (target < limGain) limGain = target; else limGain += (target - limGain) * 0.0004f;
+            L *= limGain; R *= limGain;
+        }
         g_ring[w * 2] = std::clamp(L, -1.0f, 1.0f); g_ring[w * 2 + 1] = std::clamp(R, -1.0f, 1.0f);
         g_count++;
-        g_peak = std::max(g_peak, std::max(std::fabs(L), std::fabs(R)));
         if (wav && wavFrames < uint64_t(kRate) * 600) { float lr[2] = { L, R }; fwrite(lr, 4, 2, wav); wavFrames++;
             if ((wavFrames & 0x3FFF) == 0) { long pos = ftell(wav); uint32_t d = (uint32_t)(wavFrames * 8), r = d + 36;
                 fseek(wav, 4, SEEK_SET); fwrite(&r, 4, 1, wav); fseek(wav, 40, SEEK_SET); fwrite(&d, 4, 1, wav); fseek(wav, pos, SEEK_SET); fflush(wav); } }

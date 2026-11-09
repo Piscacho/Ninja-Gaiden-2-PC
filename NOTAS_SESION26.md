@@ -121,3 +121,8 @@ tipo 000B0000, «Ninja Gaiden 2 Title Update #2», título 544307D5, media ID 69
   de interfaz (activado en 1120 para el HUD) comprimía los del centro y dejaba los de los bordes a su tamaño. Ahora los draws que
   leen una textura resuelta en este frame o el anterior nunca pasan por el GS de interfaz. Verificado 32:9 y 21:9 en combate
   (imagen continua, sin rayas en personajes, 60 fps) y menú a 16:9 con bandas.
+- Partida del usuario con la TU a 32:9 (dist): 13 tirones de 57-157 ms en ~15 min, ninguno de GPU (PSO/texturas/compilar 0):
+  trabajo del propio juego al cargar zona (ya conocido). Audio: la mezcla 5.1 -> estereo pasaba de 1 (picos de 1,5; 11 ventanas
+  de 5 s por encima) y se recortaba en duro = chasquidos/distorsion en combate. Ahora limitador suave en audio_wasapi.cpp
+  (techo 0,95, ataque inmediato, recuperacion ~50 ms; NG2_NOLIMITER=1 = antes). Comprobado con NG2_WAVDUMP en combate: mezcla
+  hasta 1,137, salida maxima 0,95, 0 muestras recortadas. Los "sin entrada" del XMA son finales de sonidos cortos (normal).
