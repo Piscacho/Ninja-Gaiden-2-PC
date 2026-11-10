@@ -252,7 +252,25 @@ void ScanDlcDir(const std::string& dir, const std::string& contentDir, int depth
     FindClose(h);
 }
 } // namespace
-void ImportDlc(const LauncherConfig& c) { ScanDlcDir(c.dlcDir, c.dataDir + "\\content", 0); }
+// Sesion 27: ademas de la carpeta dlc= del ini se mira la carpeta dlc junto al ejecutable y la carpeta "Update" hermana de la
+// de dlc= (p. ej. Base\DLC y Base\Update). Con dlc= en otra carpeta, la actualizacion copiada en dlc\ no se importaba y el
+// juego arrancaba sin Mission Mode.
+void ImportDlc(const LauncherConfig& c)
+{
+    std::vector<std::string> dirs{ c.dlcDir, ExeDir() + "\\dlc" };
+    std::string d = c.dlcDir; while (!d.empty() && (d.back() == '\\' || d.back() == '/')) d.pop_back();
+    size_t sl = d.find_last_of("\\/"); if (sl != std::string::npos) dirs.push_back(d.substr(0, sl) + "\\Update");
+    std::vector<std::string> done;
+    for (auto& dir : dirs)
+    {
+        std::string k = dir; for (auto& ch : k) ch = (char)tolower((unsigned char)ch);
+        while (!k.empty() && (k.back() == '\\' || k.back() == '/')) k.pop_back();
+        bool seen = false; for (auto& x : done) if (x == k) seen = true;
+        if (k.empty() || seen) continue;
+        done.push_back(k);
+        if (GetFileAttributesA(dir.c_str()) != INVALID_FILE_ATTRIBUTES) ScanDlcDir(dir, c.dataDir + "\\content", 0);
+    }
+}
 
 // Sesion 26: ruta de default.xexp de la actualizacion del titulo importada (datos\content\000b0000_*\default.xexp), o vacia
 std::string FindTitleUpdate(const std::string& dataDir)
