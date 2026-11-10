@@ -126,3 +126,8 @@ tipo 000B0000, «Ninja Gaiden 2 Title Update #2», título 544307D5, media ID 69
   de 5 s por encima) y se recortaba en duro = chasquidos/distorsion en combate. Ahora limitador suave en audio_wasapi.cpp
   (techo 0,95, ataque inmediato, recuperacion ~50 ms; NG2_NOLIMITER=1 = antes). Comprobado con NG2_WAVDUMP en combate: mezcla
   hasta 1,137, salida maxima 0,95, 0 muestras recortadas. Los "sin entrada" del XMA son finales de sonidos cortos (normal).
+- Segunda partida del usuario: NO tenia Mission Mode porque su ng2.ini apunta dlc= a Base\DLC y la TU estaba en dist\NG2\dlc
+  (nunca se importo; se jugo con NG2.exe base). ImportDlc ahora mira dlc=, <exe>\dlc y la carpeta Update hermana de dlc=.
+  Comprobado con su ini: se importa 000b0000_tu_* y se abre NG2TU.exe. Tirones de esa partida: racimo de 120-743 ms al cargar la
+  partida guardada (frames 4500-6700, con huecos de audio 23 -> 60); despues solo 2 en ~9 min y 0 huecos de salida. No se
+  reproduce aqui (loadgame.txt, 32:9 a 5120x1440 pantalla completa, NG2_HITCHPROF=100: sin tirones). Log en logs/usuario_s27b.log.
