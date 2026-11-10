@@ -27,7 +27,8 @@ std::vector<bool> g_used(kContexts, false);
 std::vector<bool> g_everKicked(kContexts, false);
 bool g_xmaLog = getenv("NG2_XMALOG") != nullptr;
 std::atomic<uint64_t> g_kicks{ 0 }, g_packets{ 0 }, g_samples{ 0 }, g_errors{ 0 }, g_starves{ 0 };
-uint32_t g_ctxWritten[320], g_ctxStarves[320], g_ctxKicks[320];   // por contexto, desde el ultimo informe (sesion 24)
+uint32_t g_ctxWritten[320], g_ctxStarves[320], g_ctxKicks[320];
+int64_t g_ctxLastStarve[320];   // sesion 27: momento (QPC) del ultimo hueco sin entrada por contexto   // por contexto, desde el ultimo informe (sesion 24)
 
 inline volatile LONG* RegPtr(uint32_t r) { return (volatile LONG*)(g_base + kMmio + r * 4); }
 inline uint32_t Ctx(uint32_t i) { return g_arrayGuest + i * kContextSize; }
@@ -184,7 +185,7 @@ void WorkContext(uint32_t i)
     bool wrote = false;
     while (freeBytes >= subBytes)
     {
-        if (!EnsureSamples(c, d, subSamples)) { g_starves++; g_ctxStarves[i]++; break; }   // hueco en la salida pero sin entrada (sesion 23)
+        if (!EnsureSamples(c, d, subSamples)) { g_starves++; g_ctxStarves[i]++; LARGE_INTEGER q; QueryPerformanceCounter(&q); g_ctxLastStarve[i] = q.QuadPart; break; }   // hueco en la salida pero sin entrada (sesion 23)
         g_ctxWritten[i] += 128;
         for (uint32_t k = 0; k < subSamples; k++)
         {
@@ -207,9 +208,24 @@ void XmaThread()
 {
     uint32_t rotating = 1;
     timeBeginPeriod(1);
+    // Sesion 27: el hilo del XMA con prioridad critica (como los hilos de audio del juego, prioridad 15). Con la normal, en combate
+    // se quedaba sin CPU unos ms y todas las voces se vaciaban a la vez: la mezcla caia a silencio 5-10 ms ("el audio se traba").
+    // NG2_XMAPRIO=0 = prioridad normal (antes).
+    static const bool normalPrio = getenv("NG2_XMAPRIO") && atoi(getenv("NG2_XMAPRIO")) == 0;
+    if (!normalPrio) SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+    LARGE_INTEGER qf, qlast; QueryPerformanceFrequency(&qf); QueryPerformanceCounter(&qlast);
+    double maxGap = 0, maxWork = 0; uint32_t gaps8 = 0;
     for (;;)
     {
         Sleep(1);
+        LARGE_INTEGER qnow; QueryPerformanceCounter(&qnow);
+        {   // diagnostico: tiempo entre pasadas del hilo (debe ser ~1-2 ms)
+            double gap = (qnow.QuadPart - qlast.QuadPart) * 1000.0 / qf.QuadPart;
+            if (gap > maxGap) maxGap = gap;
+            if (gap > 8.0) gaps8++;
+        }
+        struct WorkTimer { LARGE_INTEGER& last; double& mx; LARGE_INTEGER t0, f; ~WorkTimer() { LARGE_INTEGER t; QueryPerformanceCounter(&t);
+            double w = (t.QuadPart - t0.QuadPart) * 1000.0 / f.QuadPart; if (w > mx) mx = w; last = t; } } wt{ qlast, maxWork, qnow, qf };
         // CurrentContextIndex (0x606) "rota" como en Xenia: el juego compara su contexto con el que procesa el hardware
         // y, si coinciden siempre, se agota la espera y reinicia el XMA. Nunca con el bit 0x200.
         // CurrentContextIndex: valor neutro (sin el bit 0x200) cuando no se procesa nada; ver WorkContext mas abajo
@@ -279,8 +295,9 @@ void XmaThread()
         if (GetTickCount() - last > 5000)
         {
             last = GetTickCount();
-            LOG("[xma] t=%lus kicks %llu, paquetes %llu, muestras %llu, errores %llu, sin entrada %llu", GetTickCount() / 1000, (unsigned long long)g_kicks.load(), (unsigned long long)g_packets.load(),
-                (unsigned long long)g_samples.load(), (unsigned long long)g_errors.load(), (unsigned long long)g_starves.load());
+            LOG("[xma] t=%lus kicks %llu, paquetes %llu, muestras %llu, errores %llu, sin entrada %llu | hilo: hueco max %.1f ms, pasada max %.1f ms, huecos >8 ms %u", GetTickCount() / 1000, (unsigned long long)g_kicks.load(), (unsigned long long)g_packets.load(),
+                (unsigned long long)g_samples.load(), (unsigned long long)g_errors.load(), (unsigned long long)g_starves.load(), maxGap, maxWork, gaps8);
+            maxGap = maxWork = 0; gaps8 = 0;
             {   // resumen por contexto (sesion 24): muestras escritas / huecos sin entrada / kicks en los ultimos ~5 s
                 std::string line; char b[64];
                 for (uint32_t i = 0; i < kContexts; i++)
@@ -308,6 +325,16 @@ void XmaThread()
 }
 } // namespace
 
+// Sesion 27 (diagnostico de caidas de la mezcla): contextos que se quedaron sin entrada en los ultimos 'ms' milisegundos
+std::string XmaRecentStarves(double ms)
+{
+    LARGE_INTEGER q, f; QueryPerformanceCounter(&q); QueryPerformanceFrequency(&f);
+    std::string r; char b[32];
+    for (uint32_t i = 0; i < kContexts; i++)
+        if (g_ctxLastStarve[i] && (q.QuadPart - g_ctxLastStarve[i]) * 1000.0 / f.QuadPart <= ms)
+        { snprintf(b, sizeof(b), " %u(%.0fms)", i, (q.QuadPart - g_ctxLastStarve[i]) * 1000.0 / f.QuadPart); r += b; }
+    return r;
+}
 void InitXma()
 {
     g_arrayGuest = GuestAllocPhysical(kContexts * kContextSize, 0x1000);

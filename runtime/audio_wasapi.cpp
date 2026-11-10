@@ -9,6 +9,7 @@
 #include <functiondiscoverykeys_devpkey.h>
 #include <mutex>
 #include <vector>
+#include <string>
 #include <thread>
 #include <atomic>
 #include <algorithm>
@@ -132,6 +133,15 @@ void AudioSubmitXenonFrame(const uint8_t* src)
         if (wav && wavFrames < uint64_t(kRate) * 600) { float lr[2] = { L, R }; fwrite(lr, 4, 2, wav); wavFrames++;
             if ((wavFrames & 0x3FFF) == 0) { long pos = ftell(wav); uint32_t d = (uint32_t)(wavFrames * 8), r = d + 36;
                 fseek(wav, 4, SEEK_SET); fwrite(&r, 4, 1, wav); fseek(wav, 40, SEEK_SET); fwrite(&d, 4, 1, wav); fseek(wav, pos, SEEK_SET); fflush(wav); } }
+    }
+    {   // Sesion 27 (diagnostico, NG2_DIPLOG=1): frame 20 dB por debajo de los 3 anteriores = "el audio se traba"
+        static const bool dipLog = getenv("NG2_DIPLOG") != nullptr;
+        static float hist[3] = {}; static uint64_t fno = 0; static int nd = 0;
+        double e = 0; for (int i = 0; i < 256; i++) { float v = 0.5f * (ch(0, i) + ch(1, i)); e += v * v; }
+        float r = (float)sqrt(e / 256), avg = (hist[0] + hist[1] + hist[2]) / 3;
+        if (dipLog && avg > 0.03f && r < avg * 0.1f && nd++ < 200)
+        { extern std::string XmaRecentStarves(double ms); LOG("[audio] caida en el frame %llu (t=%.2f s): rms %.4f, antes %.4f; XMA sin entrada <30 ms:%s", (unsigned long long)fno, fno * 256 / 48000.0, r, avg, XmaRecentStarves(30).c_str()); }
+        hist[0] = hist[1]; hist[1] = hist[2]; hist[2] = r; fno++;
     }
     // Caidas bruscas a silencio en la mezcla del juego (sesion 23): frame de 256 muestras casi mudo tras uno con sonido
     {

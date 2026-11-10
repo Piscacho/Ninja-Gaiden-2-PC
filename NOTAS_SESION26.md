@@ -131,3 +131,9 @@ tipo 000B0000, «Ninja Gaiden 2 Title Update #2», título 544307D5, media ID 69
   Comprobado con su ini: se importa 000b0000_tu_* y se abre NG2TU.exe. Tirones de esa partida: racimo de 120-743 ms al cargar la
   partida guardada (frames 4500-6700, con huecos de audio 23 -> 60); despues solo 2 en ~9 min y 0 huecos de salida. No se
   reproduce aqui (loadgame.txt, 32:9 a 5120x1440 pantalla completa, NG2_HITCHPROF=100: sin tirones). Log en logs/usuario_s27b.log.
+- "El audio se traba" en combate (usuario): con NG2_WAVDUMP + tools/wavdips.py se ven silencios TOTALES de la mezcla de 20-70 ms
+  (sonido continuo -> 0 -> mismo nivel), sin XMA sin entrada (NG2_DIPLOG=1 lo registra por frame con los contextos XMA que se
+  quedaron sin entrada) y con el hilo del XMA siempre a tiempo (hueco max 3 ms; ahora prioridad critica, NG2_XMAPRIO=0 = antes).
+  Causa: AudioPump llamaba al callback del juego dos veces seguidas por cada periodo de WASAPI (10 ms); el callback entrega el
+  frame que mezclaron los hilos de XAudio y les pide el siguiente, y si no han terminado entrega uno vacio. Ahora separacion minima
+  de 4,8 ms entre callbacks (salvo cola < 15 ms); NG2_AUDIOBURST=1 = antes. Misma prueba de combate: frames mudos 25 -> 1.

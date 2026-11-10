@@ -871,6 +871,24 @@ void AudioPump()
             // cuando el juego iba a ~30 fps con el hilo de la GPU saturado).
             static const size_t queueTarget = 48 * size_t(std::clamp(getenv("NG2_AUDIOMS") ? atoi(getenv("NG2_AUDIOMS")) : 40, 10, 250));
             while (AudioQueuedFrames() >= queueTarget) Sleep(1);
+            // Sesion 27: ritmo como el del hardware (un frame cada 5,33 ms). WASAPI saca 10 ms de golpe y antes se pedian dos frames
+            // seguidos: el callback del juego entrega el frame que mezclaron sus hilos de XAudio y les pide el siguiente; si se le
+            // vuelve a llamar antes de que terminen, entrega un frame vacio (silencios de 5-70 ms en combate, "el audio se traba").
+            // Separacion minima de 4,8 ms salvo con la cola casi vacia (< 15 ms). NG2_AUDIOBURST=1 = antes.
+            static const bool burst = getenv("NG2_AUDIOBURST") != nullptr;
+            static LARGE_INTEGER lastCb{};
+            if (!burst && lastCb.QuadPart)
+            {
+                const LONGLONG minGap = freq.QuadPart * 48 / 10000;   // 4,8 ms
+                for (;;)
+                {
+                    QueryPerformanceCounter(&now);
+                    LONGLONG left = lastCb.QuadPart + minGap - now.QuadPart;
+                    if (left <= 0 || AudioQueuedFrames() < 720) break;
+                    if (left > freq.QuadPart / 500) Sleep(1); else YieldProcessor();
+                }
+            }
+            QueryPerformanceCounter(&lastCb);
             QueryPerformanceCounter(&t0); n = 0;
         }
         uint32_t cb = g_audioCb.load();
