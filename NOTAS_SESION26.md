@@ -179,3 +179,18 @@ tipo 000B0000, «Ninja Gaiden 2 Title Update #2», título 544307D5, media ID 69
   arranque y de cargas, casi todos con 0 ms nuestros; lo nuestro eran shaders de la cache de disco cargados en el momento
   (hasta 146 ms en una carga). Ahora presupuesto de 8 ms por frame (NG2_SHADERBUDGET); el resto se traduce y carga en el grupo de
   hilos (CompileJob con type | 0x100).
+
+## Sesion 28
+- Partida del usuario (1440p interno, TU, capitulo 3, 16 min): 60 fps casi siempre, 0 bloqueos, 39 huecos de salida de audio en
+  total. Quejas: "poco responsivo en ocasiones" y "el audio empieza a trabarse". Causa: NUESTRA captura de la ventana cada 20 s
+  (scratchpad watch_play.py -> PrintWindow con PW_RENDERFULLCONTENT de 5120x1440, 0,5-0,8 s por captura). Prueba de combate con
+  NG2_WAVDUMP: sin capturas 0 caidas de la mezcla y 60 fps; con captura cada 5 s 10 caidas y 47-55 fps. No capturar mientras
+  el usuario juega (solo revisar ng2.log).
+- "Cinematicas borrosas" (captura del usuario en la tienda de Muramasa): planos enteros desenfocados, tambien la cara del
+  personaje enfocado; igual a 720p y 1440p. La profundidad de campo (y las sombras) leen la profundidad resuelta como
+  k_24_8_FLOAT (fmt 23, superficies D24FS8); el resolve de profundidad por GPU solo servia fmt 22 y 6, asi que fmt 23 subia la
+  memoria, que ese camino no escribe -> profundidad vieja. Ahora fmt 23 usa la copia R32_FLOAT (rz); la copia empaquetada (8888)
+  y el resolve por CPU codifican en 20e4 si la superficie es D24FS8 (EncodeDepth24F). NG2_DEPTHFS8=0 = antes.
+  NG2_DEPTHREADLOG=1 registra con que formato se lee cada profundidad resuelta. Verificado: tienda (inicio del capitulo 1) nitida
+  en las caras con el fondo desenfocado, a 720p y 1440p; combate de Mission Mode sin cambios visibles en las sombras.
+  Prueba: scripts/tienda_shots1.txt con NG2.exe base (partida nueva; respaldar run/userdata antes, la sobrescribe).

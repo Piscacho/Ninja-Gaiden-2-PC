@@ -90,6 +90,7 @@ bool g_failed = false, g_frameOpen = false;
 UINT g_fi = 0;
 uint64_t g_frameDraws = 0;
 uint64_t g_curPsHash = 0;   // PS del draw en curso (diagnostico)
+const bool g_depthFs8Off = getenv("NG2_DEPTHFS8") && atoi(getenv("NG2_DEPTHFS8")) == 0;   // sesion 28
 UINT g_descCursor = 0;
 uint64_t g_frameCounter = 0;
 ComPtr<ID3DBlob> g_rectGs, g_uiGs, g_rectGsPano;   // sesion 25: GS del panoramico
@@ -184,9 +185,14 @@ struct O { float z : SV_Target0; float4 p : SV_Target1; };
 float4 vs_main(uint id : SV_VertexID) : SV_Position { float2 uv = float2((id << 1) & 2, id & 2); return float4(uv * float2(2, -2) + float2(-1, 1), 0, 1); }
 O ps_main(float4 pos : SV_Position)
 {
-    int2 xy = int2(pos.xy) * off.zw + off.xy;
+    int2 xy = int2(pos.xy) * int2(off.z & 255, off.w) + off.xy;
     float z = D.Load(int3(xy, 0));
     uint v = (uint)(saturate(z) * 16777215.0 + 0.5);
+    if (off.z & 256)
+    {   // sesion 28: superficie D24FS8 -> profundidad en 20e4 (4 bits de exponente con sesgo 15, 20 de mantisa), como el hardware
+        uint b = asuint(saturate(z)), e = b >> 23;
+        v = e < 113u ? min((uint)(saturate(z) * 17179869184.0 + 0.5), 0xFFFFFu) : min(((e - 112u) << 20) + (((b & 0x7FFFFFu) + 4u) >> 3), 0xFFFFFFu);
+    }
     O o; o.z = z; o.p = float4(0, v & 255, (v >> 8) & 255, (v >> 16) & 255) / 255.0;
     return o;
 }
@@ -1511,7 +1517,7 @@ static UINT HostRep(uint32_t fmt, uint32_t c)
 // Resolves de profundidad por GPU (sesion 21): rz = R32_FLOAT (lectura como k_24_8), rp = RGBA8 con los bits 24_8 (lectura como 8888)
 struct ResolvedDepth
 {
-    ComPtr<ID3D12Resource> rz, rp; UINT w = 0, h = 0, rtv = 0, sx = 1, sy = 1; bool screen = false; uint32_t endian = 0; uint64_t frame = 0;
+    ComPtr<ID3D12Resource> rz, rp; UINT w = 0, h = 0, rtv = 0, sx = 1, sy = 1; bool screen = false, fs8 = false; uint32_t endian = 0; uint64_t frame = 0;
     D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_RENDER_TARGET;
 };
 std::unordered_map<uint64_t, ResolvedDepth> g_resolvedDepth;
@@ -1603,8 +1609,17 @@ bool BindTexture(uint32_t tf, D3D12_CPU_DESCRIPTOR_HANDLE slot)
         return false;
     }
     }
+    {   // diagnostico (sesion 28, NG2_DEPTHREADLOG=1): con que formato se leen las profundidades resueltas por GPU
+        static const bool dl = getenv("NG2_DEPTHREADLOG") != nullptr;
+        if (dl) { auto lst = g_resolvedDepthLast.find(base); if (lst != g_resolvedDepthLast.end()) { auto rr = g_resolvedDepth.find(lst->second); static std::unordered_map<uint64_t, int> seen;
+            uint64_t key = (uint64_t(fmt) << 48) ^ (uint64_t(base) << 8) ^ (rr != g_resolvedDepth.end() && rr->second.fs8 ? 1 : 0) ^ (uint64_t(w) << 32);
+            if (seen.size() < 200 && seen[key]++ == 0) LOG("[depthread] base %08X %ux%u leida como fmt %u (resuelta %ux%u, %s) ps %016llX", base, w, h, fmt, rr != g_resolvedDepth.end() ? rr->second.w : 0, rr != g_resolvedDepth.end() ? rr->second.h : 0, rr != g_resolvedDepth.end() && rr->second.fs8 ? "D24FS8" : "D24S8", (unsigned long long)g_curPsHash); } }
+    }
     // Profundidad resuelta por GPU leida como k_24_8 (R32_FLOAT) o como 8888 (bits empaquetados)
-    if (fmt == 22 || fmt == 6)
+    // Sesion 28: tambien como k_24_8_FLOAT (23): asi leen NG2 la profundidad de la escena (profundidad de campo de las cinematicas) y
+    // las sombras, todas D24FS8. Antes caia a la memoria, que el resolve por GPU no escribe: profundidad vieja -> cinematicas que de
+    // repente se ven borrosas enteras. NG2_DEPTHFS8=0 = antes.
+    if (fmt == 22 || fmt == 6 || (fmt == 23 && !g_depthFs8Off))
     {
         auto last = g_resolvedDepthLast.find(base);
         auto it = (last != g_resolvedDepthLast.end() && last->second == ResolvedKey(base, w, h)) ? g_resolvedDepth.find(last->second) : g_resolvedDepth.end();
@@ -1620,12 +1635,13 @@ bool BindTexture(uint32_t tf, D3D12_CPU_DESCRIPTOR_HANDLE slot)
                 ProbedBarrier(2, bs, __LINE__); r.state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
             }
             uint32_t swz = (fc[3] >> 1) & 0xFFF;
-            uint32_t xmUse = fmt == 22 ? 0 : xm;
-            auto map = [xmUse, fmt](uint32_t c) -> UINT { return c < 4 ? (fmt == 22 ? 0u : (c ^ xmUse)) : (c == 4 ? D3D12_SHADER_COMPONENT_MAPPING_FORCE_VALUE_0 : D3D12_SHADER_COMPONENT_MAPPING_FORCE_VALUE_1); };
-            D3D12_SHADER_RESOURCE_VIEW_DESC sd{}; sd.Format = fmt == 22 ? DXGI_FORMAT_R32_FLOAT : DXGI_FORMAT_R8G8B8A8_UNORM;
+            const bool zf = fmt == 22 || fmt == 23;
+            uint32_t xmUse = zf ? 0 : xm;
+            auto map = [xmUse, zf](uint32_t c) -> UINT { return c < 4 ? (zf ? 0u : (c ^ xmUse)) : (c == 4 ? D3D12_SHADER_COMPONENT_MAPPING_FORCE_VALUE_0 : D3D12_SHADER_COMPONENT_MAPPING_FORCE_VALUE_1); };
+            D3D12_SHADER_RESOURCE_VIEW_DESC sd{}; sd.Format = zf ? DXGI_FORMAT_R32_FLOAT : DXGI_FORMAT_R8G8B8A8_UNORM;
             sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D; sd.Texture2D.MipLevels = 1;
             sd.Shader4ComponentMapping = D3D12_ENCODE_SHADER_4_COMPONENT_MAPPING(map(swz & 7), map((swz >> 3) & 7), map((swz >> 6) & 7), map((swz >> 9) & 7));
-            g_dev->CreateShaderResourceView(fmt == 22 ? r.rz.Get() : r.rp.Get(), &sd, slot);
+            g_dev->CreateShaderResourceView(zf ? r.rz.Get() : r.rp.Get(), &sd, slot);
             g_bindSx = r.sx; g_bindSy = r.sy;
             return true;
         }
@@ -2300,6 +2316,13 @@ DepthRt* GetDepthRt()
     return &d;
 }
 
+// Sesion 28: float [0,1] -> 20e4 (inverso de DecodeDepth24 con isFloat)
+uint32_t EncodeDepth24F(float z)
+{
+    z = std::clamp(z, 0.0f, 1.0f); uint32_t b; memcpy(&b, &z, 4); uint32_t e = b >> 23;
+    if (e < 113u) return std::min<uint32_t>((uint32_t)(z * 17179869184.0f + 0.5f), 0xFFFFFu);
+    return std::min<uint32_t>(((e - 112u) << 20) + (((b & 0x7FFFFFu) + 4u) >> 3), 0xFFFFFFu);
+}
 // Valor de RB_DEPTH_CLEAR (depth en los 24 bits altos, stencil en los 8 bajos) -> float
 float DecodeDepth24(uint32_t v24, bool isFloat)
 {
@@ -2650,7 +2673,8 @@ void Resolve()
                 g_list->SetGraphicsRootSignature(g_depthCopyRootSig.Get());
                 ID3D12DescriptorHeap* heaps[] = { g_srvHeap.Get() };
                 g_list->SetDescriptorHeaps(1, heaps);
-                int consts[4] = { x0 * (int)(msx * dS), y0 * (int)(msy * dSy), (int)msx, (int)msy };
+                const bool fs8 = (Reg(0x2002) >> 16) & 1;
+                int consts[4] = { x0 * (int)(msx * dS), y0 * (int)(msy * dSy), (int)msx | (fs8 && !g_depthFs8Off ? 256 : 0), (int)msy };
                 g_list->SetGraphicsRoot32BitConstants(0, 4, consts, 0);
                 g_list->SetGraphicsRootDescriptorTable(1, SrvGpu(dslot));
                 g_list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -2658,7 +2682,7 @@ void Resolve()
                 auto back = Transition(depthSrc->res.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
                 ProbedBarrier(1, &back, __LINE__);
             }
-            r.endian = endian; r.frame = g_frameCounter; r.screen = ScreenPitch(Reg(0x2000) & 0x3FFF);
+            r.endian = endian; r.frame = g_frameCounter; r.screen = ScreenPitch(Reg(0x2000) & 0x3FFF); r.fs8 = (Reg(0x2002) >> 16) & 1;
             g_resolvedDepthLast[destBase & 0xFFFFF000] = k;
             g_resolvedLast.erase(destBase & 0xFFFFF000);
             g_resolves++; g_gpuResolves++;
@@ -2695,6 +2719,7 @@ depthCpu:
         if (!p) { LOG("[d3d12] Map del readback (profundidad) fallo; dispositivo: 0x%08lX", (unsigned long)g_dev->GetDeviceRemovedReason()); return; }
         uint8_t* out = g_base + (0xA0000000u | (destBase & 0x1FFFFFFF));
         uint32_t pitchAligned = (destPitch + 31) & ~31u, maxH = destH ? destH : 0x3FFF;
+        const bool cpuFs8 = ((Reg(0x2002) >> 16) & 1) && !g_depthFs8Off;
         for (int y = 0; y < dhh && (uint32_t)y < maxH; y++)
         {
             uint32_t outer = TiledOuter((uint32_t)y, pitchAligned, 2);
@@ -2703,6 +2728,7 @@ depthCpu:
                 uint32_t v;
                 if (g_depth32) { float z; memcpy(&z, p + org + (y * msy * dSy) * rowPitch + (x * msx * dS) * 4, 4); v = (uint32_t)(std::clamp(z, 0.0f, 1.0f) * 16777215.0f + 0.5f) << 8; }
                 else { uint32_t raw; memcpy(&raw, p + org + (y * msy * dSy) * rowPitch + (x * msx * dS) * 4, 4); v = (raw & 0xFFFFFF) << 8; }
+                if (cpuFs8) v = EncodeDepth24F((v >> 8) / 16777215.0f) << 8;   // sesion 28: superficie D24FS8 -> 20e4, como el hardware
                 *(uint32_t*)(out + TiledInner((uint32_t)x, (uint32_t)y, 2, outer)) = endian <= 3 ? Swap32(v, endian) : v;
             }
         }
