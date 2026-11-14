@@ -2,7 +2,7 @@
 Uso: python symsample.py logs\runNN.log [ronda]"""
 import re, subprocess, sys, os
 root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-exe = os.path.join(root, "project", "build", "NG2.exe")
+exe = os.path.join(root, "project", "build_tu", "NG2TU.exe") if os.environ.get("RUN_TU") == "1" else os.path.join(root, "project", "build", "NG2.exe")
 sym = os.path.join("G:/Guitar Hero Warrior of rock/Recomp", "toolchain", "clang+llvm-23.1.4-x86_64-pc-windows-msvc", "bin", "llvm-symbolizer.exe")
 want = int(sys.argv[2]) if len(sys.argv) > 2 else 1
 lines, rnd = [], 0

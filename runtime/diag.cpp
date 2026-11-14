@@ -2,6 +2,7 @@
 // NG2_SAMPLE=<segundos>: tras ese tiempo vuelca 3 veces (1 s de separacion) la pila host y el lr de invitado de cada hilo.
 // Las direcciones NG2.exe+0x... se traducen con:  llvm-symbolizer --obj=NG2.exe 0x14xxxxxxx
 #include "runtime.h"
+#include "gpu.h"
 #include <windows.h>
 #include <mutex>
 #include <string>
@@ -226,6 +227,30 @@ static void StartHitchProf()
 
 void StartDiagnostics()
 {
+    // Sesion 27: vigilante de bloqueos (tambien en modo usuario). Si no hay presentaciones durante 8 s tras haber empezado,
+    // vuelca 2 veces la pila de todos los hilos de invitado (formato [sample], tools\symsample.py). NG2_NOWATCHDOG=1 lo quita.
+    if (!getenv("NG2_NOWATCHDOG"))
+        std::thread([] {
+            uint64_t last = 0; int still = 0; bool dumped = false;
+            for (;;)
+            {
+                Sleep(1000);
+                uint64_t s = GpuGetStats().swaps.load();
+                if (s != last) { last = s; still = 0; dumped = false; continue; }
+                if (s < 100 || dumped || ++still < 8) continue;
+                dumped = true;
+                LOG("[bloqueo] sin imagen nueva desde hace %d s (presentaciones %llu): pilas de los hilos", still, (unsigned long long)s);
+                for (int round = 0; round < 2; round++)
+                {
+                    LOG("[sample] ---- muestra %d ----", round + 1);
+                    std::vector<ThreadInfo> copy;
+                    { std::lock_guard lock(g_mutex); copy = g_threads; }
+                    for (auto& t : copy) DumpThread(t);
+                    Sleep(1500);
+                }
+                LOG("[bloqueo] fin del volcado");
+            }
+        }).detach();
     StartHitchProf();
     StartPatWatch();
     if (const char* ww = getenv("NG2_WRITEWATCH"))

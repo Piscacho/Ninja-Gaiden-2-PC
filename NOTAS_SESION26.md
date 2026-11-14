@@ -137,3 +137,11 @@ tipo 000B0000, «Ninja Gaiden 2 Title Update #2», título 544307D5, media ID 69
   Causa: AudioPump llamaba al callback del juego dos veces seguidas por cada periodo de WASAPI (10 ms); el callback entrega el
   frame que mezclaron los hilos de XAudio y les pide el siguiente, y si no han terminado entrega uno vacio. Ahora separacion minima
   de 4,8 ms entre callbacks (salvo cola < 15 ms); NG2_AUDIOBURST=1 = antes. Misma prueba de combate: frames mudos 25 -> 1.
+- Partida del usuario con la TU: PANTALLA NEGRA a ~1 min del capitulo 1 (hilos parados, GPU sin trabajo, audio mudo). Se reproduce
+  con su partida (scripts/cargar_combate.txt = loadgame + combate) y NO con el original. Vigilante nuevo (diag.cpp, tambien en modo
+  usuario): sin presentaciones 8 s -> vuelca las pilas ([bloqueo] + [sample], RUN_TU=1 tools/symsample.py). El hilo principal
+  daba vueltas en sub_83656870 (= 83633E88 del original, cambiada por la TU): su tabla de 153 casos trasladada del original tenia
+  16 entradas mal. tools/tu_check_tables.py compara cada tabla con los datos reales de la TU (--fix): 9 tablas mal; ademas
+  82421C64 (19 casos, no 18; el 10 apunta a relleno -> epilogo) y 8284FDE4 (27, no 25, segun su cmplwi). Con NG2TU.exe nuevo la
+  misma prueba sigue 4 min y llega a la cinematica. Los "default" trasladados tambien estan mal en ~50 tablas, pero no se usan
+  (el cmplwi/bgt se traduce como codigo normal). Copia previa: config/ng2_tu_switch_tables_fixed.antes_s27.toml.
