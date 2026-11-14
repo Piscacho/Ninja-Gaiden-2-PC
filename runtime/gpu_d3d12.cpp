@@ -20,7 +20,8 @@ static bool PanoActive() { return g_framesNoScene < 30; }
 // de la superficie (viewport, recortes, borrados, resolves) se escala por S; las texturas resueltas quedan S veces mas anchas
 // (ResolvedTex::sx) y las lecturas en texeles y PsParamGen lo compensan. NG2_PANOSTRETCH=1 = antes (1280x720 estirado).
 uint32_t PanoWide();
-static inline uint32_t SurfS(uint32_t p) { return (p == 1120 || p == 560 || p == 280 || p == 1280 || p == 640 || p == 320) ? PanoWide() : 1u; }
+static inline bool ScreenPitch(uint32_t p) { return p == 1120 || p == 560 || p == 280 || p == 1280 || p == 640 || p == 320; }
+static inline uint32_t SurfS(uint32_t p) { return ScreenPitch(p) ? PanoWide() : 1u; }
 #pragma comment(lib, "psapi.lib")
 #pragma comment(lib, "dxgi.lib")
 #include <wrl/client.h>
@@ -1431,6 +1432,7 @@ struct ResolvedTex
     uint32_t texFmt = 6;                               // formato de textura de Xenos del destino (6 = 8888, 2 = k_8, 36 = k_32_FLOAT)
     UINT rtv = ~0u;                                    // RTV en g_rtvHeap3 (resolves por shader)
     UINT sx = 1;                                       // sesion 27: el recurso mide w * sx de ancho (superficie panoramica)
+    bool screen = false;                               // sesion 27: resuelta desde una superficie de pantalla (la escena)
 };
 // Clave de una textura resuelta por GPU con formato distinto de 8888: los bits 32-43 de ResolvedKey estan libres
 inline uint64_t ResolvedFmtTag(uint32_t texFmt) { return texFmt == 6 ? 0 : (uint64_t(texFmt & 0x3F) << 32); }
@@ -1467,7 +1469,7 @@ static UINT HostRep(uint32_t fmt, uint32_t c)
 // Resolves de profundidad por GPU (sesion 21): rz = R32_FLOAT (lectura como k_24_8), rp = RGBA8 con los bits 24_8 (lectura como 8888)
 struct ResolvedDepth
 {
-    ComPtr<ID3D12Resource> rz, rp; UINT w = 0, h = 0, rtv = 0, sx = 1; uint32_t endian = 0; uint64_t frame = 0;
+    ComPtr<ID3D12Resource> rz, rp; UINT w = 0, h = 0, rtv = 0, sx = 1; bool screen = false; uint32_t endian = 0; uint64_t frame = 0;
     D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_RENDER_TARGET;
 };
 std::unordered_map<uint64_t, ResolvedDepth> g_resolvedDepth;
@@ -2612,7 +2614,7 @@ void Resolve()
                 auto back = Transition(depthSrc->res.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE);
                 ProbedBarrier(1, &back, __LINE__);
             }
-            r.endian = endian; r.frame = g_frameCounter;
+            r.endian = endian; r.frame = g_frameCounter; r.screen = ScreenPitch(Reg(0x2000) & 0x3FFF);
             g_resolvedDepthLast[destBase & 0xFFFFF000] = k;
             g_resolvedLast.erase(destBase & 0xFFFFF000);
             g_resolves++; g_gpuResolves++;
@@ -2812,7 +2814,7 @@ depthCpu:
             ResolvedTex& r = g_resolved[rkey2];
             r.texFmt = gpuTexFmt;
             r.swapRB = swapRB; r.endian = endian; r.frame = g_frameCounter;
-            r.destBase = destBase; r.destPitch = destPitch; r.destH = destH; r.inMemory = false;
+            r.destBase = destBase; r.destPitch = destPitch; r.destH = destH; r.inMemory = false; r.screen = ScreenPitch(Reg(0x2000) & 0x3FFF);
             r.memHash = MemHash(destBase); static uint64_t genCounter = 0; r.gen = ++genCounter;
             g_gpuResolvesWin++;
             g_resolvedDepthLast.erase(destBase & 0xFFFFF000);
@@ -3646,8 +3648,10 @@ static void D3D12DrawImpl(const XenosDraw& d)
             if (!(ps.info.textureMask & (1u << t)) || (Reg(0x4800 + t * 6) & 3) != 2) continue;
             uint32_t tb = Reg(0x4800 + t * 6 + 1) & 0xFFFFF000;
             auto lr = g_resolvedLast.find(tb);
-            if (lr != g_resolvedLast.end()) { auto ri = g_resolved.find(lr->second); if (ri != g_resolved.end() && g_frameCounter - ri->second.frame <= 1) readsResolved = true; }
-            if (!readsResolved && g_resolvedDepthLast.count(tb)) readsResolved = true;
+            // Solo texturas de la escena: resueltas desde una superficie proporcional a la pantalla (de la escena). Las pequenas que el
+            // juego prepara para la interfaz (iconos, barras) siguen comprimiendose (la vida de los jefes salia estirada).
+            if (lr != g_resolvedLast.end()) { auto ri = g_resolved.find(lr->second); if (ri != g_resolved.end() && g_frameCounter - ri->second.frame <= 1 && ri->second.screen) readsResolved = true; }
+            if (!readsResolved) { auto ld = g_resolvedDepthLast.find(tb); if (ld != g_resolvedDepthLast.end()) { auto di = g_resolvedDepth.find(ld->second); if (di != g_resolvedDepth.end() && di->second.screen) readsResolved = true; } }
         }
     if (PanoActive() && !readsResolved && g_uiGs && g_rectGsPano && ttype == D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE && (((Reg(0x2000) & 0x3FFF) == 1280 && curRt->xfmt == 0) || (Reg(0x2000) & 0x3FFF) == 1120)) gsKind |= 2;   // sesion 27: el HUD se dibuja sobre la escena (1120)
     uint64_t key = (uint64_t(gsKind) * 0x2545F4914F6CDD1Dull) ^ d.vsHash * 31 ^ d.psHash ^ (uint64_t(d.primType) << 56) ^ (uint64_t(bc) << 8) ^ (uint64_t(colorMask) << 48)

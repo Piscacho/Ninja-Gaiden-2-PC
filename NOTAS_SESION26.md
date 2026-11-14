@@ -145,3 +145,9 @@ tipo 000B0000, «Ninja Gaiden 2 Title Update #2», título 544307D5, media ID 69
   82421C64 (19 casos, no 18; el 10 apunta a relleno -> epilogo) y 8284FDE4 (27, no 25, segun su cmplwi). Con NG2TU.exe nuevo la
   misma prueba sigue 4 min y llega a la cinematica. Los "default" trasladados tambien estan mal en ~50 tablas, pero no se usan
   (el cmplwi/bgt se traduce como codigo normal). Copia previa: config/ng2_tu_switch_tables_fixed.antes_s27.toml.
+- Partida del usuario (logs/usuario_s27c.log): 32 min con la TU, capitulos con videos aurora07-12, sin bloqueos, 10 tirones de
+  100-185 ms, sin huecos de audio tras el arranque. Quejas: videos/cinematicas que "de repente se ven borrosos" (no reproducido:
+  intro WMV y cinematica de la tienda iguales con y sin superficies anchas) y la vida de los jefes "se bugea" en panoramico.
+  Cambio: la excepcion del GS de interfaz (draws que leen una textura resuelta) ahora solo cuenta texturas resueltas desde
+  superficies de pantalla (ResolvedTex/ResolvedDepth.screen, pitch 1120/560/280/1280/640/320); las pequenas que el juego prepara
+  para la interfaz vuelven a comprimirse. Sin verificar con un jefe.
