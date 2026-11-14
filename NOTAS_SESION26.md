@@ -155,3 +155,7 @@ tipo 000B0000, «Ninja Gaiden 2 Title Update #2», título 544307D5, media ID 69
   150 % y la ventana del juego no declaraba DPI: Windows le daba 3413x960 y estiraba TODA la imagen. Ahora el proceso es
   PER_MONITOR_AWARE_V2 (SetProcessDpiAwarenessContext antes de crear la ventana; solo el hilo no basta porque el hilo de la GPU
   pregunta el tamano). NG2_DPIVIRTUAL=1 = antes. Verificado: pantalla completa 5120x1440, cadena de intercambio 5120x1440, 60 fps.
+- Partida siguiente del usuario (logs/usuario_s27d.log, 14 min, capitulo de Nueva York, 40 capturas de la ventana): sin bloqueos,
+  panoramico continuo, HUD bien; huecos de audio solo al cargar el capitulo; tirones de 300-750 ms solo en cargas. PERO seguia a
+  3413x960: make_dist no habia copiado NG2TU.exe (copia fallida en silencio). Ahora make_dist avisa y para si no puede copiar.
+  Comprobado dist\NG2 (NG2.exe --jugar -> NG2TU): cadena de intercambio 5120x1440.
