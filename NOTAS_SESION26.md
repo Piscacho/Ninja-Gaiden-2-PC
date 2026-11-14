@@ -159,3 +159,7 @@ tipo 000B0000, «Ninja Gaiden 2 Title Update #2», título 544307D5, media ID 69
   panoramico continuo, HUD bien; huecos de audio solo al cargar el capitulo; tirones de 300-750 ms solo en cargas. PERO seguia a
   3413x960: make_dist no habia copiado NG2TU.exe (copia fallida en silencio). Ahora make_dist avisa y para si no puede copiar.
   Comprobado dist\NG2 (NG2.exe --jugar -> NG2TU): cadena de intercambio 5120x1440.
+- "Pop" de escenario en los laterales (usuario): la camara sigue en 16:9 (Hor+ en el VS) y el juego descartaba lo que quedaba fuera
+  de ese campo. sub_837CC920 solo arma el frustum de descarte (tanX +0x20/-tanX +0x24, tanY +0x28/+0x2C, planos +0x30/+0x34; no
+  hay matriz de proyeccion): ahora se multiplica tanX por kx tras la llamada (NG2_PANOCULL=0 = antes). 32:9 en combate: +15 % de
+  draws, 60 fps igual, imagen correcta.

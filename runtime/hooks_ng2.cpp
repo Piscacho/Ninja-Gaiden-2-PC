@@ -384,5 +384,19 @@ PPC_FUNC(sub_837CC920)
         double tx = ty * pa;
         ctx.f1.f64 = (double)(float)(2.0 * std::atan(tx));
     }
+    const uint32_t fr = ctx.r3.u32;
     __imp__sub_837CC920(ctx, base);
+    // Sesion 27: este frustum solo sirve para descartar objetos (no hay matriz de proyeccion aqui). Con el Hor+ del VS la camara
+    // sigue en 16:9 y los objetos que quedaban fuera de ese campo desaparecian en los laterales ("pop" del escenario). Se ensancha
+    // solo tanX (+0x20 / +0x24) por kx; la imagen no cambia, solo se dibuja lo que entra en la vista panoramica.
+    // NG2_PANOCULL=0 = antes.
+    static const bool wideCull = !(getenv("NG2_PANOCULL") && atoi(getenv("NG2_PANOCULL")) == 0);
+    if (wideCull && !horCam && pa > 16.0f / 9.0f + 1e-3f && fr)
+    {
+        const float kx = pa / (16.0f / 9.0f);
+        for (uint32_t off : { 0x20u, 0x24u })
+        {
+            uint32_t u = Load32(fr + off); float f; memcpy(&f, &u, 4); f *= kx; memcpy(&u, &f, 4); Store32(fr + off, u);
+        }
+    }
 }
