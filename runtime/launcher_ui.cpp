@@ -101,7 +101,7 @@ enum
 {
     ID_TAB0 = 100, ID_PLAY = 200, ID_SAVE, ID_SHOWLAUNCHER, ID_SAVED,
     ID_ISO = 300, ID_ISO_BROWSE, ID_DLC, ID_DLC_BROWSE, ID_DLCCOUNT, ID_SKIPINTRO, ID_PROFILE, ID_SAVEINFO, ID_SAVEOPEN, ID_TU, ID_TUINFO,
-    ID_FULLSCREEN = 400, ID_WINSIZE, ID_SCALE, ID_VSYNC, ID_MBLUR, ID_GRAIN, ID_AUDIOLAT, ID_ANISO, ID_FPS, ID_PANO,
+    ID_FULLSCREEN = 400, ID_WINSIZE, ID_SCALE, ID_VSYNC, ID_MBLUR, ID_GRAIN, ID_AUDIOLAT, ID_ANISO, ID_FPS, ID_PANO, ID_RES,
     ID_VIBRA = 500, ID_PADSTATUS, ID_KEYS,
     ID_SEC0 = 900, ID_BANNER = 990,
     ID_Q_PANO = 1100, ID_Q_FULL, ID_Q_FPS, ID_HOME_ISO, ID_HOME_KEYS,
@@ -609,6 +609,11 @@ void BuildUi()
         std::string an = ini.Get("anisotropico", "16");
         int y = Section(1, kY0, L"IMAGEN");
         Row(1, y, L"Proporción de la imagen", L"Más campo de visión a los lados en monitores panorámicos."); ComboRight(1, y, ID_PANO, panoItems, panoSel); y += 42;
+        {   // sesion 27: resolucion interna
+            std::string rs = ini.Get("resolucion_interna", "auto");
+            Row(1, y, L"Resolución interna", L"Más nitidez; 1440p y 4K piden más a la tarjeta gráfica."); ComboRight(1, y, ID_RES,
+                { L"Automática (según el monitor)", L"720p (consola)", L"1440p (x2)", L"4K (x3)" }, rs == "1" ? 1 : rs == "2" ? 2 : rs == "3" ? 3 : 0); y += 42;
+        }
         Row(1, y, L"Filtrado de texturas", L"Texturas nítidas en ángulo (suelos, paredes)."); ComboRight(1, y, ID_ANISO, { L"Anisotrópico 16x", L"Anisotrópico 8x", L"Anisotrópico 4x", L"Lineal (consola)" },
               an == "8" ? 1 : an == "4" ? 2 : an == "0" || an == "1" ? 3 : 0); y += 42;
         Row(1, y, L"Desenfoque de movimiento", L"Como en la consola."); ToggleRight(1, y, ID_MBLUR, flag("desenfoque_movimiento", true)); y += 42;
@@ -720,6 +725,7 @@ bool Collect(bool requireIso)
     ini.Set("vibracion", Toggled(ID_VIBRA) ? "1" : "0");
     { static const char* an[] = { "16", "8", "4", "0" }; ini.Set("anisotropico", an[std::clamp(Sel(ID_ANISO), 0, 3)]); }
     { static const char* pp[] = { "16:9", "auto", "21:9", "32:9" }; ini.Set("panoramico", pp[std::clamp(Sel(ID_PANO), 0, 3)]); }
+    { static const char* rr[] = { "auto", "1", "2", "3" }; ini.Set("resolucion_interna", rr[std::clamp(Sel(ID_RES), 0, 3)]); }
     { static const char* lat[] = { "baja", "normal", "segura" }; ini.Set("latencia_audio", lat[std::clamp(Sel(ID_AUDIOLAT), 0, 2)]); }
     return true;
 }

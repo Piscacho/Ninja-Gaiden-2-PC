@@ -109,6 +109,7 @@ LauncherConfig LoadConfig()
             else if (k == "pantalla_completa") _putenv_s("NG2_FULLSCREEN", v == "1" ? "1" : "0");
             else if (k == "ventana" && !v.empty()) _putenv_s("NG2_WINSIZE", v.c_str());
             else if (k == "panoramico" && !v.empty()) _putenv_s("NG2_PANO", v.c_str());
+            else if (k == "resolucion_interna" && !v.empty()) _putenv_s("NG2_RES", v.c_str());   // sesion 27: auto | 1 | 2 | 3
             else if (k == "actualizacion") { if (v == "0") _putenv_s("NG2_NOTU", "1"); }   // sesion 26: usar la TU si esta
             else if (k.rfind("NG2_", 0) == 0 && !v.empty()) _putenv_s(k.c_str(), v.c_str());
         }

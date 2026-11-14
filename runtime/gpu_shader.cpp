@@ -61,7 +61,7 @@ bool XBool(uint i) { return ((XB[i >> 7][(i >> 5) & 3] >> (i & 31)) & 1) != 0; }
 )";
 
 bool g_xlatNoGrad = false;
-uint32_t PanoWide();   // sesion 27: superficies panoramicas mas anchas (gpu_d3d12.cpp)   // sesion 24: retraduccion sin gradientes (ver GetShader de gpu_d3d12.cpp)
+uint32_t PanoWide(); uint32_t ResScale();   // sesion 27: superficies escaladas (gpu_d3d12.cpp)   // sesion 24: retraduccion sin gradientes (ver GetShader de gpu_d3d12.cpp)
 namespace
 {
 uint32_t Bits(uint32_t v, int lo, int n) { return (v >> lo) & ((1u << n) - 1); }
@@ -437,9 +437,9 @@ void EmitTextureFetch(Gen& g, const uint32_t* w, TranslatedShader& ts)
         if (noDenorm) ox = oy = 0;
         g.L("{ float2 uv = float2(r[%u].%c, r[%u].%c);", src, kComp[Bits(srcSwz, 0, 2)], src, kComp[Bits(srcSwz, 2, 2)]);
         g.L("float2 tsz; XTex[%u].GetDimensions(tsz.x, tsz.y);", tf);
-        // Sesion 27 (solo con el panoramico ancho): XTexMode.z bits 8-15 = escala X del recurso x16 (textura resuelta mas ancha)
-        const bool wideT = PanoWide() > 1 && (denorm || ox || oy);
-        if (wideT) g.L("float2 gsz = tsz; { uint tsc = (XTexMode[%u].z >> 8) & 0xFFu; if (tsc) gsz.x = tsz.x * 16.0 / (float)tsc; }", tf);
+        // Sesion 27 (solo con superficies escaladas): XTexMode.z bits 8-15 / 16-23 = escala X / Y del recurso x16 (textura resuelta mayor)
+        const bool wideT = (PanoWide() > 1 || ResScale() > 1) && (denorm || ox || oy);
+        if (wideT) g.L("float2 gsz = tsz; { uint tsc = (XTexMode[%u].z >> 8) & 0xFFu, tsy = (XTexMode[%u].z >> 16) & 0xFFu; if (tsc) gsz.x = tsz.x * 16.0 / (float)tsc; if (tsy) gsz.y = tsz.y * 16.0 / (float)tsy; }", tf, tf);
         const char* szn = wideT ? "gsz" : "tsz";
         if (ox || oy) g.L("uv += float2(%d, %d) * 0.5 / (%s);", ox, oy, denorm ? "float2(1, 1)" : szn);
         if (denorm) g.L("uv /= %s;", szn);
@@ -692,9 +692,9 @@ TranslatedShader TranslateXenosShader(uint32_t type, const uint32_t* words, uint
         h += "    [unroll] for (int k = 0; k < 16; k++) r[k] = i.t[k]; [unroll] for (int k2 = 16; k2 < 64; k2++) r[k2] = float4(0, 0, 0, 0);\n";
         // Sesion 24: PsParamGen (SQ_PROGRAM_CNTL bit 18, SQ_CONTEXT_MISC.param_gen_pos), como Xenia: XY = pixel (entero) con el signo de X
         // = cara trasera; Z, W = 0. Lo usan los shaders que leen texturas por posicion de pixel (restauracion de la escena anterior).
-        if (PanoWide() > 1)
-            h += "    if (XAlpha.z >= 0) { uint xm = (uint)XAlpha.w; float2 pp = i.pos.xy / float2(max((xm >> 3) & 7u, 1u), max(xm & 7u, 1u)); pp.y = floor(pp.y);\n"
-                 "        if ((xm & 64u) == 0u) pp.x = floor(pp.x); else if (xm & 128u) pp.x -= 0.5;\n"
+        if (PanoWide() > 1 || ResScale() > 1)   // sesion 27: muestras por pixel del juego en X (bits 0-4) e Y (5-9), sin redondear (10 / 11)
+            h += "    if (XAlpha.z >= 0) { uint xm = (uint)XAlpha.w; float2 pp = i.pos.xy / float2(max(xm & 31u, 1u), max((xm >> 5) & 31u, 1u));\n"
+                 "        if ((xm & 1024u) == 0u) pp.x = floor(pp.x); if ((xm & 2048u) == 0u) pp.y = floor(pp.y); if (xm & 4096u) pp -= 0.5;\n"
                  "        r[(int)XAlpha.z] = float4(xFront ? pp.x : -pp.x, pp.y, 0, 0); }\n";
         else
         h += "    if (XAlpha.z >= 0) { uint xm = (uint)XAlpha.w; float2 pp = floor(i.pos.xy / float2(max(xm >> 3, 1u), max(xm & 7u, 1u)));\n"

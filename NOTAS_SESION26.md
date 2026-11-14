@@ -163,3 +163,13 @@ tipo 000B0000, «Ninja Gaiden 2 Title Update #2», título 544307D5, media ID 69
   de ese campo. sub_837CC920 solo arma el frustum de descarte (tanX +0x20/-tanX +0x24, tanY +0x28/+0x2C, planos +0x30/+0x34; no
   hay matriz de proyeccion): ahora se multiplica tanX por kx tras la llamada (NG2_PANOCULL=0 = antes). 32:9 en combate: +15 % de
   draws, 60 fps igual, imagen correcta.
+- Auditoria de la TU: XexGetProcedureAddress devolvia thunks del original (runtime/xam_ordinals_tu.inc generado con los registros de
+  importacion reales de la TU, 65/65); ganchos activos revisados (barrera de XAudio identica; guardado con NG2ADDR; los demas son
+  #ifndef NG2_TU); jt_finder sobre la TU: 0 bctr sin tabla.
+- RESOLUCION INTERNA (como GH): NG2_RES = 1 | 2 | 3 | auto (alto del monitor / 720), resolucion_interna= en ng2.ini y "Resolucion
+  interna" en Graficos del launcher (Automatica por defecto). Todas las superficies se crean Rs veces mayores en X e Y
+  (rt->sx = Rs x ancho panoramico si es de pantalla, rt->sy = Rs); resolves, borrados, recortes, viewports, copias de profundidad,
+  regiones derivadas, volcado a memoria y capturas con sx/sy; XTexMode.z bits 16-23 = escala Y; PsParamGen con escala codificada
+  (bits 0-4 X, 5-9 Y, 10/11 sin redondear); medio pixel de superficie en los draws de restauracion de profundidad; variantes del
+  color->profundidad por escala; bufer de lectura x min(S*Rs*Rs, 8) y resolve por CPU omitido si no cabe. Verificado: 32:9 a x2
+  (5120x1440 nativo, 60 fps en combate, sin rayas) y 16:9 a x2 (2560x1440, intro y cinematica de la tienda).

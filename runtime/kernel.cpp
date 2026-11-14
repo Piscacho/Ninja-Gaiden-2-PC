@@ -332,7 +332,11 @@ GUEST_IMPL(XexLoadImage) { LOG("[kernel] XexLoadImage(%s) -> no encontrado", (co
 // ya importa, se devuelve la direccion de su thunk (que el runtime ya implementa). Tabla en xam_ordinals.inc (de xex\imports_named.txt).
 struct OrdinalThunk { uint32_t ordinal, thunk; };
 static const OrdinalThunk kXamOrdinals[] = {
+#ifdef NG2_TU
+#include "xam_ordinals_tu.inc"   // sesion 27: los thunks de la actualizacion estan en otras direcciones
+#else
 #include "xam_ordinals.inc"
+#endif
 };
 // Funciones de XAM que el juego no importa pero pide por ordinal: se registran en direcciones de relleno del codigo
 PPC_FUNC(ng2_XamContentAggregateCreateEnumerator);
