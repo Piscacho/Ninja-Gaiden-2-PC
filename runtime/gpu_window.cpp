@@ -123,7 +123,13 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l)
 void GpuStartWindow()
 {
     if (getenv("NG2_NOWINDOW")) return;
+    // Para todo el proceso: el hilo de la GPU pregunta el tamano de la ventana (GetClientRect) y, sin esto, recibia el virtual
+    if (!getenv("NG2_DPIVIRTUAL")) SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     std::thread([] {
+        // Sesion 27: con la escala de Windows al 150 % (monitor del usuario de 5120x1440) el juego veia 3413x960 y Windows estiraba
+        // la imagen: todo (videos incluidos) salia borroso. Como en GH, la ventana del juego usa los pixeles reales del monitor.
+        // NG2_DPIVIRTUAL=1 = antes.
+        if (!getenv("NG2_DPIVIRTUAL")) SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         WNDCLASSW wc{}; wc.lpfnWndProc = WndProc; wc.hInstance = GetModuleHandleW(nullptr); wc.lpszClassName = L"NG2Recomp";
         wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
         RegisterClassW(&wc);

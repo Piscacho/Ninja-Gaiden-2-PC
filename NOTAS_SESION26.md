@@ -151,3 +151,7 @@ tipo 000B0000, «Ninja Gaiden 2 Title Update #2», título 544307D5, media ID 69
   Cambio: la excepcion del GS de interfaz (draws que leen una textura resuelta) ahora solo cuenta texturas resueltas desde
   superficies de pantalla (ResolvedTex/ResolvedDepth.screen, pitch 1120/560/280/1280/640/320); las pequenas que el juego prepara
   para la interfaz vuelven a comprimirse. Sin verificar con un jefe.
+- "Videos borrosos" (captura de la ventana del usuario): el contador decia 1280x720 -> 3413x960. Su monitor 5120x1440 esta al
+  150 % y la ventana del juego no declaraba DPI: Windows le daba 3413x960 y estiraba TODA la imagen. Ahora el proceso es
+  PER_MONITOR_AWARE_V2 (SetProcessDpiAwarenessContext antes de crear la ventana; solo el hilo no basta porque el hilo de la GPU
+  pregunta el tamano). NG2_DPIVIRTUAL=1 = antes. Verificado: pantalla completa 5120x1440, cadena de intercambio 5120x1440, 60 fps.
