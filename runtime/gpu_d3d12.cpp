@@ -1368,6 +1368,13 @@ static void EnqueueCompile(CompileJob job)
                 {
                     CompileJob j;
                     { std::unique_lock<std::mutex> l(m); cv.wait(l, [] { return !q.empty(); }); j = std::move(q.back()); q.pop_back(); }
+                    if (j.type & 0x100u)
+                    {   // sesion 27: traduccion tambien en el hilo (pasado el presupuesto del frame en GetShader)
+                        j.type &= 0xFFu;
+                        { std::lock_guard<std::mutex> lk(g_xlatMutex); j.e->info = TranslateXenosShader(j.type, j.code.data(), (uint32_t)j.code.size()); }
+                        if (j.e->info.ok) ApplyShaderOverrides(j.type, j.hash, j.e->info.hlsl);
+                        if (!j.e->info.ok) { j.e->state.store(2, std::memory_order_release); continue; }
+                    }
                     CompileShaderEntry(*j.e, j.type, j.code.data(), (uint32_t)j.code.size(), j.hash);
                 }
             }).detach();
@@ -1384,6 +1391,20 @@ ShaderEntry& GetShader(uint32_t type, const uint32_t* code, uint32_t count, uint
         if (e.state.load(std::memory_order_acquire) == 1) { static ShaderEntry pending; return pending; }   // aun compilando: ok = false
         return e;
     }
+    // Sesion 27: presupuesto de 8 ms por frame para traducir y cargar de la cache de disco en el momento (cada shader ~3,5 ms; en
+    // una carga llegaban 40 de golpe = 146 ms de tiron). Pasado el presupuesto, el resto va al grupo de hilos (se dibuja al estar).
+    // NG2_SHADERBUDGET=<ms> (0 = sin limite).
+    static const double budgetMs = getenv("NG2_SHADERBUDGET") ? atof(getenv("NG2_SHADERBUDGET")) : 8.0;
+    static uint64_t budgetFrame = ~0ull; static double spentMs = 0;
+    if (budgetFrame != g_frameCounter) { budgetFrame = g_frameCounter; spentMs = 0; }
+    if (!getenv("NG2_SYNCSHADERS") && budgetMs > 0 && spentMs >= budgetMs)
+    {
+        ShaderEntry& e = g_shaders[hash];
+        e.state = 1;
+        EnqueueCompile({ &e, type | 0x100u, std::vector<uint32_t>(code, code + count), hash });   // 0x100: traducir en el hilo
+        static ShaderEntry pending; return pending;
+    }
+    struct Spent { double t0 = QpcMs(); ~Spent() { spentMs += QpcMs() - t0; } } spent;
     ShaderEntry& e = g_shaders[hash];
     { std::lock_guard<std::mutex> lk(g_xlatMutex); e.info = TranslateXenosShader(type, code, count); }
     if (e.info.ok && ApplyShaderOverrides(type, hash, e.info.hlsl)) LOG("[d3d12] sustitucion aplicada a %016llX", (unsigned long long)hash);

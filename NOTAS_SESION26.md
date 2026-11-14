@@ -173,3 +173,9 @@ tipo 000B0000, «Ninja Gaiden 2 Title Update #2», título 544307D5, media ID 69
   (bits 0-4 X, 5-9 Y, 10/11 sin redondear); medio pixel de superficie en los draws de restauracion de profundidad; variantes del
   color->profundidad por escala; bufer de lectura x min(S*Rs*Rs, 8) y resolve por CPU omitido si no cabe. Verificado: 32:9 a x2
   (5120x1440 nativo, 60 fps en combate, sin rayas) y 16:9 a x2 (2560x1440, intro y cinematica de la tienda).
+- Tirones de carga (NG2_HITCHPROF=100 + tools/hitchagg.py): el de ~170 ms es el hilo principal en sub_82385A00 (Dijkstra sobre un
+  grafo de 256 nodos; ~40000 llamadas de ~4 us en las cargas de zona, trabajo del propio juego) y el de ~110 ms un hilo del juego
+  (sub_822F16D0 -> sub_8373A4D0/sub_83737AE0) con el principal esperando. En las partidas del usuario los de 300-850 ms son del
+  arranque y de cargas, casi todos con 0 ms nuestros; lo nuestro eran shaders de la cache de disco cargados en el momento
+  (hasta 146 ms en una carga). Ahora presupuesto de 8 ms por frame (NG2_SHADERBUDGET); el resto se traduce y carga en el grupo de
+  hilos (CompileJob con type | 0x100).
