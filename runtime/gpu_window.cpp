@@ -90,9 +90,16 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l)
     // Pantalla completa sin bordes con F11 o Alt+Enter (sesion 23). El swapchain es de 1280x720 y se escala solo.
     case WM_SYSKEYDOWN: case WM_KEYDOWN:
         if (w == VK_F3 && m == WM_KEYDOWN && !(l & (1 << 30))) { g_showStats = !g_showStats; return 0; }   // sesion 25: contador (F3)
+        if (w == VK_F9 && m == WM_KEYDOWN && !(l & (1 << 30)))   // sesion 28: F9 = marca en ng2.log (p. ej. "aqui se corto el audio"), sin captura
+        {
+            static int nm = 0;
+            LOG("[marca] F9 n.%d t=%.2fs", ++nm, GetTickCount64() / 1000.0);
+            return 0;
+        }
         if (w == VK_F12 && m == WM_KEYDOWN)   // F12: captura de pantalla shot_9xx.bmp (sesion 23, para informar de fallos)
         {
             static int n = 900;
+            LOG("[marca] F12 captura shot_%d t=%.2fs", n, GetTickCount64() / 1000.0);
             g_dumpRequest = n++;
             return 0;
         }

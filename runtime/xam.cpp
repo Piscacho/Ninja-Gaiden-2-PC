@@ -898,8 +898,17 @@ void AudioPump()
         uint64_t r1 = actx->r1.u64, r13 = actx->r13.u64;
         uint64_t before = g_audioSubmits.load();
         actx->r3.u64 = g_audioArg.load();
+        LARGE_INTEGER cbStart; QueryPerformanceCounter(&cbStart);
         fn(*actx, g_base);
         actx->r1.u64 = r1; actx->r13.u64 = r13;
+        {   // Sesion 28: diagnostico de los huecos de salida durante los tirones del juego: callback lento o sin frame
+            LARGE_INTEGER cbEnd; QueryPerformanceCounter(&cbEnd);
+            const double ms = (cbEnd.QuadPart - cbStart.QuadPart) * 1000.0 / freq.QuadPart;
+            static int nslow = 0, nmiss = 0;
+            const bool miss = g_audioSubmits.load() == before;
+            if (ms > 8.0 && nslow < 200) { nslow++; LOG("[audio] callback lento t=%.2fs: %.1f ms (en cola %zu frames)%s", GetTickCount64() / 1000.0, ms, AudioQueuedFrames(), miss ? ", sin frame" : ""); }
+            else if (miss && nmiss < 200) { nmiss++; LOG("[audio] callback sin frame t=%.2fs (%.1f ms, en cola %zu frames)", GetTickCount64() / 1000.0, ms, AudioQueuedFrames()); }
+        }
         if (g_audioSubmits.load() == before) Sleep(5);   // el juego no envio frame: no girar en vacio
         if (g_audioFrames.load() < 3) LOG("[audio] callback %llu devuelto (envios %llu)", (unsigned long long)g_audioFrames.load(), (unsigned long long)g_audioSubmits.load());
         if (++g_audioFrames % 1875 == 0) LOG("[audio] %llu frames pedidos, %llu enviados por el juego", (unsigned long long)g_audioFrames.load(), (unsigned long long)g_audioSubmits.load());

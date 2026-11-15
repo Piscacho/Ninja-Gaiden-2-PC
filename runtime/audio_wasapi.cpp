@@ -28,7 +28,7 @@ size_t g_read = 0, g_count = 0;                    // en frames estereo
 std::atomic<bool> g_started{ false }, g_running{ false };
 std::atomic<uint64_t> g_underruns{ 0 }, g_drops{ 0 };
 float g_peak = 0; uint64_t g_frames = 0;   // protegidos por g_mutex
-uint64_t g_dropouts = 0, g_dropoutsWin = 0;
+uint64_t g_dropouts = 0, g_dropoutsWin = 0, g_dips = 0, g_dipsWin = 0;
 
 void RenderThread()
 {
@@ -83,7 +83,8 @@ void RenderThread()
                 out[i * 2] = g_ring[r * 2]; out[i * 2 + 1] = g_ring[r * 2 + 1];
             }
             g_read = (g_read + n) % kRingFrames; g_count -= n;
-            if (n < want) { memset(out + n * 2, 0, (want - n) * 8); if (g_started) g_underruns++; }
+            if (n < want) { memset(out + n * 2, 0, (want - n) * 8); if (g_started) { g_underruns++;
+                static int nu = 0; if (nu++ < 200) LOG("[wasapi] hueco t=%.2fs: faltaron %u de %u frames", GetTickCount64() / 1000.0, (unsigned)(want - n), (unsigned)want); } }
         }
         render->ReleaseBuffer(want, 0);
     }
@@ -134,13 +135,19 @@ void AudioSubmitXenonFrame(const uint8_t* src)
             if ((wavFrames & 0x3FFF) == 0) { long pos = ftell(wav); uint32_t d = (uint32_t)(wavFrames * 8), r = d + 36;
                 fseek(wav, 4, SEEK_SET); fwrite(&r, 4, 1, wav); fseek(wav, 40, SEEK_SET); fwrite(&d, 4, 1, wav); fseek(wav, pos, SEEK_SET); fflush(wav); } }
     }
-    {   // Sesion 27 (diagnostico, NG2_DIPLOG=1): frame 20 dB por debajo de los 3 anteriores = "el audio se traba"
-        static const bool dipLog = getenv("NG2_DIPLOG") != nullptr;
+    {   // Sesion 27: frame 20 dB por debajo de los 3 anteriores = "el audio se traba". Sesion 28: siempre activo (el contador de
+        // silencios totales no ve los cortes en los que algo sigue sonando); se cuenta en la linea [wasapi] y se registran las
+        // primeras 300 con la hora (t= de GetTickCount, como las demas lineas). NG2_NODIPLOG=1 = solo contar.
+        static const bool dipLog = getenv("NG2_NODIPLOG") == nullptr;
         static float hist[3] = {}; static uint64_t fno = 0; static int nd = 0;
         double e = 0; for (int i = 0; i < 256; i++) { float v = 0.5f * (ch(0, i) + ch(1, i)); e += v * v; }
         float r = (float)sqrt(e / 256), avg = (hist[0] + hist[1] + hist[2]) / 3;
-        if (dipLog && avg > 0.03f && r < avg * 0.1f && nd++ < 200)
-        { extern std::string XmaRecentStarves(double ms); LOG("[audio] caida en el frame %llu (t=%.2f s): rms %.4f, antes %.4f; XMA sin entrada <30 ms:%s", (unsigned long long)fno, fno * 256 / 48000.0, r, avg, XmaRecentStarves(30).c_str()); }
+        if (avg > 0.03f && r < avg * 0.1f)
+        {
+            g_dips++; g_dipsWin++;
+            if (dipLog && nd++ < 300)
+            { extern std::string XmaRecentStarves(double ms); LOG("[audio] caida t=%.2fs (frame de audio %llu): rms %.4f, antes %.4f, en cola %zu; XMA sin entrada <30 ms:%s", GetTickCount64() / 1000.0, (unsigned long long)fno, r, avg, g_count, XmaRecentStarves(30).c_str()); }
+        }
         hist[0] = hist[1]; hist[1] = hist[2]; hist[2] = r; fno++;
     }
     // Caidas bruscas a silencio en la mezcla del juego (sesion 23): frame de 256 muestras casi mudo tras uno con sonido
@@ -154,9 +161,10 @@ void AudioSubmitXenonFrame(const uint8_t* src)
     // Nivel de pico cada ~5 s (para comprobar en el log que llega sonido de verdad)
     if (++g_frames % 940 == 0)
     {
-        LOG("[wasapi] t=%lus pico %.3f, en cola %zu frames, huecos %llu, descartes %llu, cortes en la mezcla %llu (total %llu)", GetTickCount() / 1000, g_peak, g_count,
-            (unsigned long long)g_underruns.load(), (unsigned long long)g_drops.load(), (unsigned long long)g_dropoutsWin, (unsigned long long)g_dropouts);
-        g_peak = 0; g_dropoutsWin = 0;
+        LOG("[wasapi] t=%lus pico %.3f, en cola %zu frames, huecos %llu, descartes %llu, cortes en la mezcla %llu (total %llu), caidas -20 dB %llu (total %llu)", GetTickCount() / 1000, g_peak, g_count,
+            (unsigned long long)g_underruns.load(), (unsigned long long)g_drops.load(), (unsigned long long)g_dropoutsWin, (unsigned long long)g_dropouts,
+            (unsigned long long)g_dipsWin, (unsigned long long)g_dips);
+        g_peak = 0; g_dropoutsWin = 0; g_dipsWin = 0;
     }
 }
 size_t AudioQueuedFrames() { std::lock_guard l(g_mutex); return g_count; }

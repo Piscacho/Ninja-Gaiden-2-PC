@@ -194,3 +194,12 @@ tipo 000B0000, «Ninja Gaiden 2 Title Update #2», título 544307D5, media ID 69
   NG2_DEPTHREADLOG=1 registra con que formato se lee cada profundidad resuelta. Verificado: tienda (inicio del capitulo 1) nitida
   en las caras con el fondo desenfocado, a 720p y 1440p; combate de Mission Mode sin cambios visibles en las sombras.
   Prueba: scripts/tienda_shots1.txt con NG2.exe base (partida nueva; respaldar run/userdata antes, la sobrescribe).
+- Partida siguiente del usuario (logs/usuario_s28b.log, ~9 min, TU, sin capturas): 60 fps en 105 de 109 tramos de 5 s, 0 bloqueos,
+  22 huecos de salida solo en los primeros 6 s (arranque), 0 silencios totales. Aun asi oyo "un corte del audio en un combate".
+  El contador "cortes en la mezcla" solo ve silencios totales. Ahora siempre activos: caidas de -20 dB de un frame a otro
+  ([audio] caida t=..., y "caidas -20 dB" en la linea [wasapi]; NG2_NODIPLOG=1 = solo contar), cada hueco de salida con su hora
+  ([wasapi] hueco t=...), callback del juego > 8 ms o sin frame ([audio] callback lento / sin frame) y F9 = marca en el log
+  ([marca] F9 t=...; F12 tambien deja marca). Combate de 7 min (scripts/combate_largo.txt, RUN_TU=1, NG2_RES=2, rutas relativas a
+  run/): una vez, racha de tirones del propio juego (80-238 ms, frames 22069-22108, todo lo nuestro a 0 ms) con 11 huecos de salida
+  en esos segundos; repetido con NG2_HITCHPROF=150 no se reprodujo (0 huecos, 1 callback de 11 ms). Las 6 caidas de la pantalla de
+  titulo (pares cada 148 s) son de la musica del titulo. Siguiente: con la marca F9 del usuario, cruzar caidas/huecos/tirones.
