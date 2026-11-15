@@ -3729,6 +3729,30 @@ static void D3D12DrawImpl(const XenosDraw& d)
             if (!readsResolved) { auto ld = g_resolvedDepthLast.find(tb); if (ld != g_resolvedDepthLast.end()) { auto di = g_resolvedDepth.find(ld->second); if (di != g_resolvedDepth.end() && di->second.screen) readsResolved = true; } }
         }
     if (PanoActive() && !readsResolved && g_uiGs && g_rectGsPano && ttype == D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE && (((Reg(0x2000) & 0x3FFF) == 1280 && curRt->xfmt == 0) || (Reg(0x2000) & 0x3FFF) == 1120)) gsKind |= 2;   // sesion 27: el HUD se dibuja sobre la escena (1120)
+    {   // Sesion 28 (diagnostico de la vida de los jefes): en el frame de una captura F12 con el panoramico activo, cada draw de las
+        // superficies de 1120/1280 con su decision de GS de interfaz y las texturas resueltas que lee (como mucho 600 lineas por captura)
+        extern std::atomic<int> g_dumpRequest; static int diagReq = -1, diagN = 0;
+        const int req = g_dumpRequest.load();
+        const uint32_t pitch = Reg(0x2000) & 0x3FFF;
+        if (req >= 0 && PanoActive() && (pitch == 1120 || pitch == 1280))
+        {
+            if (req != diagReq) { diagReq = req; diagN = 0; LOG("[uidiag] ---- captura %d, frame %llu", req, (unsigned long long)g_frameCounter); }
+            if (diagN++ < 600)
+            {
+                std::string tx;
+                for (uint32_t t = 0; t < 16; t++)
+                {
+                    if (!(ps.info.textureMask & (1u << t)) || (Reg(0x4800 + t * 6) & 3) != 2) continue;
+                    uint32_t tb = Reg(0x4800 + t * 6 + 1) & 0xFFFFF000; char b[96];
+                    auto lr = g_resolvedLast.find(tb); const char* st = "";
+                    if (lr != g_resolvedLast.end()) { auto ri = g_resolved.find(lr->second); if (ri != g_resolved.end()) st = ri->second.screen ? (g_frameCounter - ri->second.frame <= 1 ? "/res-pant" : "/res-pant-viejo") : "/res"; }
+                    else if (g_resolvedDepthLast.count(tb)) st = "/prof";
+                    snprintf(b, sizeof b, " t%u=%08X%s", t, tb, st); tx += b;
+                }
+                LOG("[uidiag] pitch %u xfmt %u tipo %u vs %016llX ps %016llX gs %d leeRes %d rect %d%s", pitch, curRt->xfmt, (unsigned)ttype, (unsigned long long)d.vsHash, (unsigned long long)d.psHash, gsKind, (int)readsResolved, (int)rect, tx.c_str());
+            }
+        }
+    }
     uint64_t key = (uint64_t(gsKind) * 0x2545F4914F6CDD1Dull) ^ d.vsHash * 31 ^ d.psHash ^ (uint64_t(d.primType) << 56) ^ (uint64_t(bc) << 8) ^ (uint64_t(colorMask) << 48)
                  ^ ((uint64_t(useDepth ? dc : 0) * 0x9E3779B97F4A7C15ull) ^ (uint64_t(sc) << 60)) ^ (uint64_t(curRt->fmt) * 0xC2B2AE3D27D4EB4Full)
                  ^ (rt1 ? ((uint64_t(rt1->fmt) + 1) * 0x165667B19E3779F9ull ^ (uint64_t(mask1) << 36) ^ (uint64_t(bc1) * 0x27D4EB2F165667C5ull)) : 0);
@@ -4408,7 +4432,7 @@ bool D3D12PresentResolved(HWND hwnd, uint32_t fb, std::vector<uint32_t>* readbac
             if (flFrom >= 0 && (long long)hn >= flFrom && (long long)hn < flFrom + flCount)
                 LOG("[framelog] %llu: %.1f ms, draws %llu (%.1f ms), present %.1f ms, espera GPU %.1f ms", (unsigned long long)hn, dt, (unsigned long long)g_frameDraws, g_hDrawMs, g_hPresentMs, g_hWaitMs);
         }
-        { extern void HitchProfNotify(double, double, uint64_t); if (dt > 0) HitchProfNotify(now - dt, now, hn); }
+        { extern void HitchProfNotify(double, double, uint64_t, double); if (dt > 0) HitchProfNotify(now - dt, now, hn, 0); }
         OverlayTick(g_frameDraws);
         g_framesNoScene = g_frameHasScene ? 0 : std::min(g_framesNoScene + 1, 1000); g_frameHasScene = false;   // sesion 27
         if (dt > hitchMs && hitches++ < 2000)

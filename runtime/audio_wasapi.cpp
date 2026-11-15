@@ -29,6 +29,8 @@ std::atomic<bool> g_started{ false }, g_running{ false };
 std::atomic<uint64_t> g_underruns{ 0 }, g_drops{ 0 };
 float g_peak = 0; uint64_t g_frames = 0;   // protegidos por g_mutex
 uint64_t g_dropouts = 0, g_dropoutsWin = 0, g_dips = 0, g_dipsWin = 0;
+constexpr size_t kRecFrames = kRate * 30;          // sesion 28: ultimos 30 s de la salida (F9)
+std::mutex g_recMutex; std::vector<float> g_rec; size_t g_recPos = 0; bool g_recFull = false;
 
 void RenderThread()
 {
@@ -66,6 +68,8 @@ void RenderThread()
     g_running = true;
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);   // sesion 23
     LOG("[wasapi] salida iniciada: estereo float %u Hz, buffer %u frames, objetivo %u frames (periodo %u)", kRate, bufFrames, targetPad, periodFrames);
+    { std::lock_guard l(g_recMutex); g_rec.assign(kRecFrames * 2, 0.0f); }
+    UINT32 holeFrames = 0;
     for (;;)
     {
         WaitForSingleObject(ev, 100);
@@ -83,10 +87,14 @@ void RenderThread()
                 out[i * 2] = g_ring[r * 2]; out[i * 2 + 1] = g_ring[r * 2 + 1];
             }
             g_read = (g_read + n) % kRingFrames; g_count -= n;
-            if (n < want) { memset(out + n * 2, 0, (want - n) * 8); if (g_started) { g_underruns++;
-                static int nu = 0; if (nu++ < 200) LOG("[wasapi] hueco t=%.2fs: faltaron %u de %u frames", GetTickCount64() / 1000.0, (unsigned)(want - n), (unsigned)want); } }
+            if (n < want) { memset(out + n * 2, 0, (want - n) * 8); if (g_started) { g_underruns++; holeFrames = want - n; } }
+        }
+        {   // Sesion 28: lo que sale de verdad (huecos incluidos) a la grabacion de los ultimos 30 s (F9 -> corte_NN.wav)
+            std::lock_guard l(g_recMutex);
+            for (UINT32 i = 0; i < want; i++) { g_rec[g_recPos * 2] = out[i * 2]; g_rec[g_recPos * 2 + 1] = out[i * 2 + 1]; if (++g_recPos == kRecFrames) { g_recPos = 0; g_recFull = true; } }
         }
         render->ReleaseBuffer(want, 0);
+        if (holeFrames) { static int nu = 0; if (nu++ < 200) LOG("[wasapi] hueco t=%.2fs: faltaron %u de %u frames", GetTickCount64() / 1000.0, holeFrames, want); holeFrames = 0; }
     }
 }
 } // namespace
@@ -166,6 +174,28 @@ void AudioSubmitXenonFrame(const uint8_t* src)
             (unsigned long long)g_dipsWin, (unsigned long long)g_dips);
         g_peak = 0; g_dropoutsWin = 0; g_dipsWin = 0;
     }
+}
+// Sesion 28: F9 guarda los ultimos 30 s de lo que salio por los altavoces en corte_<n>.wav (float estereo 48 kHz), en otro hilo
+void AudioSaveRecent(int n)
+{
+    std::vector<float> buf;
+    {
+        std::lock_guard l(g_recMutex);
+        if (g_rec.empty()) return;
+        size_t frames = g_recFull ? kRecFrames : g_recPos, start = g_recFull ? g_recPos : 0;
+        buf.resize(frames * 2);
+        for (size_t i = 0; i < frames; i++) { size_t r = (start + i) % kRecFrames; buf[i * 2] = g_rec[r * 2]; buf[i * 2 + 1] = g_rec[r * 2 + 1]; }
+    }
+    std::thread([n, buf = std::move(buf)] {
+        char name[32]; snprintf(name, sizeof name, "corte_%02d.wav", n);
+        FILE* f = fopen(name, "wb"); if (!f) { LOG("[audio] no se pudo crear %s", name); return; }
+        uint8_t hdr[44] = { 'R','I','F','F', 0,0,0,0, 'W','A','V','E', 'f','m','t',' ', 16,0,0,0, 3,0, 2,0 };
+        uint32_t d = (uint32_t)(buf.size() * 4), r = d + 36;
+        memcpy(hdr + 4, &r, 4); *(uint32_t*)(hdr + 24) = kRate; *(uint32_t*)(hdr + 28) = kRate * 8; *(uint16_t*)(hdr + 32) = 8; *(uint16_t*)(hdr + 34) = 32;
+        memcpy(hdr + 36, "data", 4); memcpy(hdr + 40, &d, 4);
+        fwrite(hdr, 1, 44, f); fwrite(buf.data(), 4, buf.size(), f); fclose(f);
+        LOG("[audio] %s guardado (%.1f s de la salida antes de la marca)", name, buf.size() / 2 / double(kRate));
+    }).detach();
 }
 size_t AudioQueuedFrames() { std::lock_guard l(g_mutex); return g_count; }
 bool AudioOutputActive() { return g_running.load(); }

@@ -12,6 +12,7 @@
 bool PsPadGetState(uint16_t& buttons, uint8_t& lt, uint8_t& rt, int16_t sticks[4]);   // dualsense.cpp
 #include <algorithm>
 #include <cmath>
+void HitchProfNotify(double, double, uint64_t, double); double HitchProfNowMs(); void AudioSaveRecent(int n);   // diag.cpp / audio_wasapi.cpp (sesion 28)
 
 namespace
 {
@@ -650,6 +651,7 @@ std::vector<ScriptStep> LoadInputScript()
         ScriptStep s{ (DWORD)(secs * 1000), 0, hold, false };
         if (!strcmp(btn, "DUMP")) s.dump = true;
         else if (!strcmp(btn, "DUMP8")) { s.dump = true; s.hold = 0xFFFF; }   // 8 frames seguidos (sesion 23)
+        else if (!strcmp(btn, "MARCA")) { s.dump = true; s.hold = 0xFFFE; }   // sesion 28: como F9 (marca + corte_NN.wav)
         else
             for (char* tok = strtok(btn, "+"); tok; tok = strtok(nullptr, "+"))
             {
@@ -738,6 +740,7 @@ uint16_t CurrentButtons(uint8_t* lt = nullptr, uint8_t* rt = nullptr, int16_t* s
         for (auto& s : steps)
         {
             if (now < s.ms) continue;
+            if (s.dump && s.hold == 0xFFFE) { if (!s.fired) { s.fired = true; static int nm = 100; LOG("[marca] guion n.%d t=%.2fs", ++nm, GetTickCount64() / 1000.0); AudioSaveRecent(nm); } continue; }
             if (s.dump) { if (!s.fired) { s.fired = true; if (s.hold == 0xFFFF) g_dumpSeq = 8; else g_dumpRequest = (int)(s.ms / 1000); } continue; }
             if (now < s.ms + s.hold) { buttons |= s.mask; stickMask |= s.sticks; if ((s.trig & 1) && lt) *lt = 255; if ((s.trig & 2) && rt) *rt = 255; }
             if (!s.fired) { s.fired = true; LOG("[input] guion t=%.1f s: botones 0x%04X", s.ms / 1000.0, s.mask); }
@@ -906,6 +909,7 @@ void AudioPump()
             const double ms = (cbEnd.QuadPart - cbStart.QuadPart) * 1000.0 / freq.QuadPart;
             static int nslow = 0, nmiss = 0;
             const bool miss = g_audioSubmits.load() == before;
+            if (ms > 40.0) { const double nowMs = HitchProfNowMs(); HitchProfNotify(nowMs - ms, nowMs, g_audioFrames.load(), ms); }   // NG2_HITCHPROF: pilas durante la llamada lenta
             if (ms > 8.0 && nslow < 200) { nslow++; LOG("[audio] callback lento t=%.2fs: %.1f ms (en cola %zu frames)%s", GetTickCount64() / 1000.0, ms, AudioQueuedFrames(), miss ? ", sin frame" : ""); }
             else if (miss && nmiss < 200) { nmiss++; LOG("[audio] callback sin frame t=%.2fs (%.1f ms, en cola %zu frames)", GetTickCount64() / 1000.0, ms, AudioQueuedFrames()); }
         }

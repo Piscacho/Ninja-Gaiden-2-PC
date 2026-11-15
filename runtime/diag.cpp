@@ -166,16 +166,20 @@ struct HpSample { double t; DWORD tid; uint32_t entry; int n; bool wait; uint64_
 std::vector<HpSample> g_hp; size_t g_hpPos = 0; std::mutex g_hpMutex; double g_hpThreshold = 0;
 double HpNow() { static LARGE_INTEGER f = [] { LARGE_INTEGER x; QueryPerformanceFrequency(&x); return x; }(); LARGE_INTEGER c; QueryPerformanceCounter(&c); return double(c.QuadPart) * 1000.0 / double(f.QuadPart); }
 }
-void HitchProfNotify(double startMs, double endMs, uint64_t frame)
+double HitchProfNowMs() { return HpNow(); }
+// Sesion 28: audioMs > 0 = volcado por una llamada de audio del juego lenta (AudioPump), con todas las esperas
+void HitchProfNotify(double startMs, double endMs, uint64_t frame, double audioMs)
 {
-    if (g_hpThreshold <= 0 || endMs - startMs < g_hpThreshold) return;
-    static int dumps = 0; if (dumps >= 25) return; dumps++;
+    if (g_hpThreshold <= 0 || (audioMs <= 0 && endMs - startMs < g_hpThreshold)) return;
+    static int dumps = 0, adumps = 0;
+    if (audioMs > 0) { if (adumps >= 15) return; adumps++; } else { if (dumps >= 25) return; dumps++; }
     std::lock_guard lock(g_hpMutex);
-    LOG("[prof] ---- tiron frame %llu (%.0f ms) ----", (unsigned long long)frame, endMs - startMs);
+    if (audioMs > 0) LOG("[prof] ---- tiron audio callback %.0f ms (frame %llu) ----", audioMs, (unsigned long long)frame);
+    else LOG("[prof] ---- tiron frame %llu (%.0f ms) ----", (unsigned long long)frame, endMs - startMs);
     for (auto& s : g_hp)
     {
         if (s.t < startMs || s.t > endMs || s.n == 0) continue;
-        static unsigned wskip = 0; if (s.wait && (wskip++ % 8) != 0) continue;   // las esperas, 1 de cada 8
+        static unsigned wskip = 0; if (audioMs <= 0 && s.wait && (wskip++ % 8) != 0) continue;   // las esperas, 1 de cada 8 (todas si es audio)
         char line[400]; int n = snprintf(line, sizeof(line), "[prof] T%lu:%08X%s", s.tid, s.entry, s.wait ? "W" : "");
         for (int f = 0; f < s.n; f++) n += snprintf(line + n, sizeof(line) - n, " %llX", (unsigned long long)s.pc[f]);
         LOG("%s", line);

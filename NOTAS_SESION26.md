@@ -203,3 +203,16 @@ tipo 000B0000, «Ninja Gaiden 2 Title Update #2», título 544307D5, media ID 69
   run/): una vez, racha de tirones del propio juego (80-238 ms, frames 22069-22108, todo lo nuestro a 0 ms) con 11 huecos de salida
   en esos segundos; repetido con NG2_HITCHPROF=150 no se reprodujo (0 huecos, 1 callback de 11 ms). Las 6 caidas de la pantalla de
   titulo (pares cada 148 s) son de la musica del titulo. Siguiente: con la marca F9 del usuario, cruzar caidas/huecos/tirones.
+- Partida del usuario con marcas (logs/usuario_s28c.log, ~12 min, TU, 32:9 a 1440p): durante toda la partida habia OTROS DOS
+  juegos recompilados abiertos (Gears of War 3 y Judgment, ~2 nucleos cada uno, con varios relanzamientos). La llamada de audio del
+  juego (XAudio, dentro de AudioPump) se bloqueaba 50-550 ms cada ~3,5 s -> 699 huecos de salida y 20-50 fps. F9 n.2: caida de la
+  mezcla del juego 0,7 s antes, con el contexto XMA 0 sin entrada 15 ms antes (no es la salida: la cola estaba llena). F9 n.1 y n.3:
+  nada en los 10-15 s anteriores. Ojo: KeSetAffinityThread solo cambia el numero de CPU que ve el invitado (KPCR+0x10C); los hilos
+  del anfitrion no estan fijados a nucleos.
+- F12 del usuario (shot_900, logs/usuario_s28c_shot900.bmp): barra de vida del jefe en 32:9 con el MARCO a todo el ancho (sin
+  comprimir) y el relleno rojo comprimido al centro. Sin reproducir: el guion de cargar partida entra en Mission Mode (mision 01,
+  sin jefe). Diagnostico nuevo: en el frame de cada captura (F12 o DUMP) con panoramico, [uidiag] por draw de 1120/1280: ps/vs,
+  gs (2 = GS de interfaz), leeRes y texturas resueltas (/res-pant = de pantalla en este frame o el anterior). Si el marco sale con
+  gs 2, el GS no lo comprime (w != 1 o ancho >= 1,95); si sale con gs 0 y leeRes 1, la excepcion de texturas resueltas lo deja fuera.
+- Mas diagnostico de audio: F9 (y MARCA en los guiones) guarda corte_NN.wav con los ultimos 30 s de lo que salio por WASAPI
+  (huecos incluidos); NG2_HITCHPROF=<ms> tambien vuelca pilas cuando la llamada de audio tarda > 40 ms ("tiron audio callback").

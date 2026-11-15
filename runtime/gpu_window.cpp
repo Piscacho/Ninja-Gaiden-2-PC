@@ -11,6 +11,7 @@
 #include <atomic>
 #include <algorithm>
 #include <cstdlib>
+void AudioSaveRecent(int n);   // audio_wasapi.cpp (sesion 28)
 extern std::atomic<bool> g_showStats;   // gpu_d3d12.cpp: contador en pantalla (F3, sesion 25)
 bool D3D12Present(HWND hwnd, const uint32_t* pixels, uint32_t w, uint32_t h);
 bool D3D12PresentResolved(HWND hwnd, uint32_t fb, std::vector<uint32_t>* readback, uint32_t& outW, uint32_t& outH);
@@ -94,6 +95,7 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l)
         {
             static int nm = 0;
             LOG("[marca] F9 n.%d t=%.2fs", ++nm, GetTickCount64() / 1000.0);
+            AudioSaveRecent(nm);   // ultimos 30 s de audio -> corte_NN.wav
             return 0;
         }
         if (w == VK_F12 && m == WM_KEYDOWN)   // F12: captura de pantalla shot_9xx.bmp (sesion 23, para informar de fallos)
