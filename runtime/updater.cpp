@@ -15,7 +15,7 @@
 
 namespace fs = std::filesystem;
 
-const char* AppVersion() { return "1.1.0"; }   // mantener igual que project/ng2.rc
+const char* AppVersion() { return "1.0.0"; }   // mantener igual que project/ng2.rc
 
 namespace
 {

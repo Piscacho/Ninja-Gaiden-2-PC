@@ -219,9 +219,9 @@ tipo 000B0000, «Ninja Gaiden 2 Title Update #2», título 544307D5, media ID 69
 - Repositorio publico Piscacho/Ninja-Gaiden-2-PC (README, LICENSE MIT, THIRD-PARTY-NOTICES, tools/make_release.ps1). Imagenes del
   launcher como en Dead Space Extraction: solo en la release (fuera de git), autores en dist_files/CREDITOS.txt (SteamGridDB juego
   5253715; portada = hero 70883 de FireStarJutsu).
-- v1.1.0: actualizador de GH (runtime/updater.cpp: ultima release de GitHub, zip con tar.exe, conserva ng2.ini, userdata, dlc,
+- v1.0.0 (publicada como unica release; antes 1.0.0 sin actualizador y 1.1.0): actualizador de GH (runtime/updater.cpp: ultima release de GitHub, zip con tar.exe, conserva ng2.ini, userdata, dlc,
   shadercache, shaders, imagenes; el exe en uso pasa a .old y se borra al arrancar). Launcher: "ACTUALIZACIONES Y LAUNCHER" en
   Juego, actualizar_al_abrir=1, actualizar_repo= opcional; NG2_UPDATE_API=<url> / NG2_UPDATE_AUTOYES=1 para pruebas (probado con un
   servidor local: detecta, descarga, instala, conserva ini y partidas y se reabre). Sin ventana de consola (/SUBSYSTEM:WINDOWS
   /ENTRY:mainCRTStartup), icono propio (tools/make_icon.py -> project/ng2.ico, shuriken) y version/autoria en project/ng2.rc
-  (llvm-rc en build_game*.bat), "por Piscacho · v1.1.0" en la barra lateral. La version va en AppVersion() y en ng2.rc.
+  (llvm-rc en build_game*.bat), "por Piscacho · v1.0.0" en la barra lateral. La version va en AppVersion() y en ng2.rc.

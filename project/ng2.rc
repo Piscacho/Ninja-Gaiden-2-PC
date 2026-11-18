@@ -6,8 +6,8 @@
 1 ICON "ng2.ico"
 
 1 VERSIONINFO
-FILEVERSION 1,1,0,0
-PRODUCTVERSION 1,1,0,0
+FILEVERSION 1,0,0,0
+PRODUCTVERSION 1,0,0,0
 FILEFLAGSMASK 0x3fL
 FILEFLAGS 0x0L
 FILEOS 0x40004L
@@ -20,12 +20,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Piscacho"
             VALUE "FileDescription", "Ninja Gaiden II - recompilacion para PC"
-            VALUE "FileVersion", "1.1.0"
+            VALUE "FileVersion", "1.0.0"
             VALUE "InternalName", "NG2"
             VALUE "LegalCopyright", "(c) 2026 Piscacho - licencia MIT (https://github.com/Piscacho/Ninja-Gaiden-2-PC)"
             VALUE "OriginalFilename", "NG2.exe"
             VALUE "ProductName", "Ninja Gaiden II PC (recompilacion estatica, no oficial)"
-            VALUE "ProductVersion", "1.1.0"
+            VALUE "ProductVersion", "1.0.0"
             VALUE "Comments", "Requiere el ISO original de Xbox 360. No contiene archivos del juego."
         END
     END
