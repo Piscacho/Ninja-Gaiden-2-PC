@@ -19,6 +19,7 @@ bool EnsureIso(LauncherConfig& c);
 void ImportDlc(const LauncherConfig& c);
 bool LauncherWanted(int argc, char** argv);   // launcher_ui.cpp (sesion 25)
 bool RunLauncherUI();
+void UpdaterCleanup();   // updater.cpp (sesion 28)
 bool XexpApply(const std::vector<uint8_t>& baseXex, const std::vector<uint8_t>& baseImage, const std::vector<uint8_t>& xexp,
                std::vector<uint8_t>& newHdr, std::vector<uint8_t>& newImage, std::string& err);   // xexp_patch.cpp (sesion 26)
 std::string FindTitleUpdate(const std::string& dataDir);   // launcher.cpp (sesion 26)
@@ -125,6 +126,7 @@ int main(int argc, char** argv)
         std::string dir = exe; dir = dir.substr(0, dir.find_last_of("\\/"));
         SetCurrentDirectoryA(dir.c_str());
         if (!getenv("NG2_STDERR")) freopen((dir + "\\ng2.log").c_str(), "w", stderr);
+        UpdaterCleanup();   // sesion 28: restos de una actualizacion anterior (*.old)
         if (LauncherWanted(argc, argv) && !RunLauncherUI()) return 0;   // sesion 25: launcher (JUGAR guarda ng2.ini)
         LauncherConfig cfg = LoadConfig();
         if (!EnsureIso(cfg)) return 1;

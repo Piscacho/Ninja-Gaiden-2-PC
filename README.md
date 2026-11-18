@@ -25,6 +25,8 @@ Recompilación estática para PC de **Ninja Gaiden II** (Xbox 360, 544307D5) par
 - **Imagen**: resolución interna ×2/×3 (1440p, 4K), panorámico **21:9 y 32:9** (Hor+, con la interfaz en su sitio),
   filtrado anisotrópico, escalado y opciones de desenfoque y grano en el launcher.
 - **Partidas**: carpeta `userdata\` junto al ejecutable (consérvala si actualizas a mano).
+- **Actualizar**: el launcher avisa de versiones nuevas (página **Juego → Actualizaciones y launcher**) y se actualiza
+  solo con un botón, conservando `ng2.ini`, las partidas, el DLC y la caché de shaders.
 
 ### Teclas
 
@@ -108,6 +110,7 @@ Las opciones de diagnóstico `NG2_*` están documentadas en `NOTAS_SESION*.md`.
 - [XenonRecomp](https://github.com/hedge-dev/XenonRecomp): recompilador de PowerPC a C++.
 - [Xenia](https://github.com/xenia-project/xenia): documentación y referencia del comportamiento de la GPU y del kernel de Xbox 360.
 - [FFmpeg](https://ffmpeg.org): decodificación de audio XMA y de los vídeos WMV.
+- Imágenes del launcher: [SteamGridDB](https://www.steamgriddb.com/) (autores en `CREDITOS.txt`; solo van en la release).
 
 ## Licencia
 

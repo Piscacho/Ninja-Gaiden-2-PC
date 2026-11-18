@@ -16,6 +16,8 @@
 #include <xinput.h>
 #include <wincodec.h>
 #include <string>
+#include <thread>
+#include <functional>
 #include <vector>
 #include <map>
 #include <set>
@@ -33,6 +35,12 @@
 
 bool PsPadGetState(uint16_t& buttons, uint8_t& lt, uint8_t& rt, int16_t sticks[4]);   // dualsense.cpp
 std::string FindTitleUpdate(const std::string& dataDir);   // launcher.cpp (sesion 26)
+// updater.cpp (sesion 28, como en GH)
+struct UpdateInfo { bool ok = false, newer = false; std::string error, tag, zipUrl, notes, page; };
+UpdateInfo UpdateCheck(const std::string& repo);
+bool UpdateInstall(const UpdateInfo& u, const std::vector<std::wstring>& preserve, const std::function<void(int, int)>& progress, std::string& err);
+bool UpdaterRelaunch();
+const char* AppVersion();
 
 namespace
 {
@@ -100,7 +108,7 @@ const COLORREF kBg = RGB(9, 9, 11), kScan = RGB(14, 14, 17), kSide = RGB(7, 7, 9
 enum
 {
     ID_TAB0 = 100, ID_PLAY = 200, ID_SAVE, ID_SHOWLAUNCHER, ID_SAVED,
-    ID_ISO = 300, ID_ISO_BROWSE, ID_DLC, ID_DLC_BROWSE, ID_DLCCOUNT, ID_SKIPINTRO, ID_PROFILE, ID_SAVEINFO, ID_SAVEOPEN, ID_TU, ID_TUINFO,
+    ID_ISO = 300, ID_ISO_BROWSE, ID_DLC, ID_DLC_BROWSE, ID_DLCCOUNT, ID_SKIPINTRO, ID_PROFILE, ID_SAVEINFO, ID_SAVEOPEN, ID_TU, ID_TUINFO, ID_UPDINFO, ID_UPDCHECK, ID_UPDAUTO,
     ID_FULLSCREEN = 400, ID_WINSIZE, ID_SCALE, ID_VSYNC, ID_MBLUR, ID_GRAIN, ID_AUDIOLAT, ID_ANISO, ID_FPS, ID_PANO, ID_RES,
     ID_VIBRA = 500, ID_PADSTATUS, ID_KEYS,
     ID_SEC0 = 900, ID_BANNER = 990,
@@ -131,6 +139,7 @@ struct Ui
     std::map<HWND, bool> toggles; std::set<HWND> dimLabels;
     IniDoc ini;
     DWORD savedT = 0; int ticks = 0;
+    UpdateInfo upd; bool updBusy = false, updAuto = false;
     bool result = false, done = false;
 } g;
 int S(int v) { return MulDiv(v, g.dpi, 96); }
@@ -462,7 +471,8 @@ void PaintMain(HDC dc0)
     RECT t3{ S(24), S(182), side - S(8), S(204) };
     Text(dc, L"PORT PC", t3, kAccent2, g.fontHead, DT_LEFT | DT_VCENTER | DT_SINGLELINE, S(4));
     RECT t4{ S(24), S(204), side - S(8), S(222) };
-    Text(dc, L"recompilación estática  ·  DirectX 12", t4, kDim, g.fontSmall);
+    wchar_t by[64]; swprintf(by, 64, L"por Piscacho  ·  v%hs", AppVersion());   // sesion 28: autoria y version, como en GH
+    Text(dc, by, t4, kDim, g.fontSmall);
     RECT note{ S(24), S(kH - 70), side - S(12), S(kH - 16) };
     Text(dc, L"En el juego: F11 o Alt+Intro\npantalla completa  ·  F3 FPS", note, kDim, g.fontSmall, DT_LEFT | DT_TOP | DT_WORDBREAK);
     RECT panel{ S(kX0 - 14), S(16), S(kXR + 14), S(kPanelBottom) };
@@ -598,8 +608,11 @@ void BuildUi()
         Row(0, y, L"Actualización del título #2 (Mission Mode)", nullptr, 620, ID_TUINFO); ToggleRight(0, y, ID_TU, flag("actualizacion", true)); y += 46;
         y = Section(0, y, L"PARTIDAS");
         Label(0, L"", kX0, y, kXR - kX0, 20, ID_SAVEINFO, true, g.fontSmall); y += 26;
-        Button(0, L"Abrir carpeta", kX0, y, 160, 32, ID_SAVEOPEN); y += 48;
-        y = Section(0, y, L"LAUNCHER");
+        Button(0, L"Abrir carpeta", kX0, y, 160, 32, ID_SAVEOPEN); y += 38;
+        y = Section(0, y, L"ACTUALIZACIONES Y LAUNCHER");
+        Label(0, L"", kX0, y, kXR - kX0 - 240, 20, ID_UPDINFO, true, g.fontSmall);
+        Button(0, L"Buscar actualizaciones", kXR - 230, y - 4, 230, 30, ID_UPDCHECK); y += 30;
+        Row(0, y, L"Buscar actualizaciones al abrir", L"Avisa si hay una versión nueva en GitHub."); ToggleRight(0, y, ID_UPDAUTO, flag("actualizar_al_abrir", true)); y += 42;
         Row(0, y, L"Mostrar este launcher al iniciar", L"Si lo desactivas, mantén Mayús al abrir el juego para verlo."); ToggleRight(0, y, ID_SHOWLAUNCHER, flag("mostrar_launcher", true));
     }
     // ---- Graficos ----
@@ -715,6 +728,7 @@ bool Collect(bool requireIso)
     ini.Set("perfil", Toggled(ID_PROFILE) ? "1" : "0");
     ini.Set("actualizacion", Toggled(ID_TU) ? "1" : "0");
     ini.Set("mostrar_launcher", Toggled(ID_SHOWLAUNCHER) ? "1" : "0");
+    ini.Set("actualizar_al_abrir", Toggled(ID_UPDAUTO) ? "1" : "0");
     ini.Set("pantalla_completa", Toggled(ID_FULLSCREEN) ? "1" : "0");
     ini.Set("ventana", kWinSizesIni[std::clamp(Sel(ID_WINSIZE), 0, kNumWinSizes - 1)]);
     ini.Set("escalado", Sel(ID_SCALE) == 1 ? "bilineal" : "catmull-rom");
@@ -729,6 +743,58 @@ bool Collect(bool requireIso)
     { static const char* lat[] = { "baja", "normal", "segura" }; ini.Set("latencia_audio", lat[std::clamp(Sel(ID_AUDIOLAT), 0, 2)]); }
     return true;
 }
+// ---- actualizaciones (sesion 28, como en GH: updater.cpp en un hilo; los resultados llegan por mensajes) ----
+enum { WM_UPD_CHECKED = WM_APP + 1, WM_UPD_PROGRESS, WM_UPD_INSTALLED };
+std::wstring U8(const std::string& s) { if (s.empty()) return L""; int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0); std::wstring w(n - 1, 0); MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, w.data(), n); return w; }
+std::string Repo() { return g.ini.Get("actualizar_repo", "Piscacho/Ninja-Gaiden-2-PC"); }
+void SetUpdInfo(const std::wstring& t) { SetWindowTextW(Item(ID_UPDINFO), t.c_str()); }
+void StartUpdateCheck(bool automatic)
+{
+    if (g.updBusy) return;
+    g.updBusy = true; g.updAuto = automatic;
+    if (!automatic) { SetUpdInfo(L"Buscando actualizaciones..."); EnableWindow(Item(ID_UPDCHECK), FALSE); }
+    HWND wnd = g.wnd; std::string repo = Repo();
+    std::thread([wnd, repo] { auto* u = new UpdateInfo(UpdateCheck(repo)); if (!PostMessageW(wnd, WM_UPD_CHECKED, 0, (LPARAM)u)) delete u; }).detach();
+}
+void StartUpdateInstall()
+{
+    if (g.updBusy || !g.upd.newer) return;
+    g.updBusy = true;
+    for (int id : { ID_UPDCHECK, ID_PLAY, ID_SAVE }) EnableWindow(Item(id), FALSE);
+    SetUpdInfo(L"Descargando...");
+    HWND wnd = g.wnd; UpdateInfo u = g.upd;
+    std::string d = DataDirL(); std::vector<std::wstring> keep = { W(d.substr(d.find_last_of("\\/") + 1)) };   // carpeta de partidas (datos=)
+    std::thread([wnd, u, keep] {
+        std::string err;
+        bool ok = UpdateInstall(u, keep, [wnd](int pct, int phase) { PostMessageW(wnd, WM_UPD_PROGRESS, pct, phase); }, err);
+        PostMessageW(wnd, WM_UPD_INSTALLED, ok, (LPARAM)new std::string(err));
+    }).detach();
+}
+void OnUpdateChecked(UpdateInfo* u)
+{
+    g.updBusy = false; g.upd = *u; delete u;
+    EnableWindow(Item(ID_UPDCHECK), TRUE);
+    std::wstring cur = W(AppVersion());
+    if (!g.upd.ok) { if (!g.updAuto) SetUpdInfo(L"No se pudo comprobar: " + U8(g.upd.error) + L"  (repositorio " + W(Repo()) + L")"); return; }
+    if (!g.upd.newer) { if (!g.updAuto) SetUpdInfo(L"Tienes la última versión (v" + cur + L")."); return; }
+    std::wstring tag = U8(g.upd.tag);
+    SetUpdInfo(L"Nueva versión " + tag + L" disponible (tienes v" + cur + L").");
+    SetWindowTextW(Item(ID_UPDCHECK), (L"Instalar " + tag).c_str());
+    InvalidateRect(Item(ID_UPDCHECK), nullptr, TRUE);
+    SetWindowTextW(Item(ID_SAVED), (L"Hay una versión nueva: " + tag + L" (página Juego)").c_str()); g.savedT = 0;
+}
+void OnUpdateInstalled(bool ok, std::string* err)
+{
+    g.updBusy = false;
+    for (int id : { ID_UPDCHECK, ID_PLAY, ID_SAVE }) EnableWindow(Item(id), TRUE);
+    if (!ok) { SetUpdInfo(L"No se pudo actualizar: " + U8(*err)); delete err; return; }
+    delete err;
+    if (Collect(false)) g.ini.Save(ExeDirL() + "\\ng2.ini");   // no perder lo cambiado en la ventana
+    if (!getenv("NG2_UPDATE_AUTOYES")) MessageBoxW(g.wnd, (L"Actualizado a " + U8(g.upd.tag) + L". El launcher se abrirá de nuevo.").c_str(), L"Actualización", MB_ICONINFORMATION);
+    if (UpdaterRelaunch()) DestroyWindow(g.wnd);
+    else SetUpdInfo(L"Actualizado. Cierra y vuelve a abrir el juego.");
+}
+
 LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l)
 {
     switch (m)
@@ -747,6 +813,14 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l)
     }
     case WM_CTLCOLOREDIT: { HDC dc = (HDC)w; SetTextColor(dc, kText); SetBkColor(dc, kInput); return (LRESULT)g.brInput; }
     case WM_CTLCOLORBTN: return (LRESULT)g.brPanel;
+    case WM_UPD_CHECKED: OnUpdateChecked((UpdateInfo*)l); return 0;
+    case WM_UPD_PROGRESS:
+    {
+        static const wchar_t* ph[] = { L"Descargando", L"Descomprimiendo", L"Instalando" };
+        wchar_t t[64]; if (l == 0) swprintf(t, 64, L"%s... %d %%", ph[0], (int)w); else swprintf(t, 64, L"%s...", ph[std::min<int>((int)l, 2)]);
+        SetUpdInfo(t); return 0;
+    }
+    case WM_UPD_INSTALLED: OnUpdateInstalled(w != 0, (std::string*)l); return 0;
     case WM_TIMER:
         g.ticks++;
         if (g.tab == 2 && g.ticks % 30 == 0) UpdatePads();
@@ -771,6 +845,15 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l)
         case ID_DLC_BROWSE: BrowseFolder(ID_DLC); UpdateDlcCount(); return 0;
         case ID_DLC: if (code == EN_CHANGE) UpdateDlcCount(); return 0;
         case ID_ISO: if (code == EN_CHANGE) UpdateHome(); return 0;
+        case ID_UPDCHECK:
+            if (g.upd.newer)
+            {
+                std::wstring q = L"¿Descargar e instalar " + U8(g.upd.tag) + L"?\n\nSe conservan ng2.ini, las partidas, el DLC y la caché de shaders.";
+                if (!g.upd.notes.empty()) q += L"\n\nNovedades:\n" + U8(g.upd.notes.substr(0, 600));
+                if (getenv("NG2_UPDATE_AUTOYES") || MessageBoxW(h, q.c_str(), L"Actualización", MB_YESNO | MB_ICONQUESTION) == IDYES) StartUpdateInstall();
+            }
+            else StartUpdateCheck(false);
+            return 0;
         case ID_SAVEOPEN: { std::string d = DataDirL(); CreateDirectoryA(d.c_str(), nullptr); ShellExecuteA(h, "open", d.c_str(), nullptr, nullptr, SW_SHOWNORMAL); } return 0;
         case ID_Q_PANO: case ID_PANO:
             if (code == CBN_SELCHANGE) SendMessageW(Item(id == ID_Q_PANO ? ID_PANO : ID_Q_PANO), CB_SETCURSEL, Sel(id), 0);
@@ -846,6 +929,8 @@ bool RunLauncherUI()
     DwmSetWindowAttribute(g.wnd, 34 /* DWMWA_BORDER_COLOR */, &border, sizeof(border));
     BuildUi();
     UpdateDlcCount(); UpdateSaveInfo(); UpdateTuInfo();
+    { wchar_t t[160]; swprintf(t, 160, L"Versión instalada: v%hs  ·  repositorio %hs", AppVersion(), Repo().c_str()); SetUpdInfo(t); }
+    if (Toggled(ID_UPDAUTO) || getenv("NG2_UPDATE_API")) StartUpdateCheck(true);
     ShowTab(g.tab);
     ShowWindow(g.wnd, SW_SHOW); UpdateWindow(g.wnd);
     SetTimer(g.wnd, 1, 33, nullptr);

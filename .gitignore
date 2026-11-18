@@ -43,3 +43,6 @@ tools/lzxdelta.exe
 ppc_tu/
 ppc_tu_viejos/
 dist_prueba_tu/
+
+# sesion 28: recursos compilados (llvm-rc)
+project/ng2.res
