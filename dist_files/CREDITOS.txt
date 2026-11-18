@@ -1,4 +1,4 @@
-Imagenes del launcher descargadas de SteamGridDB (https://www.steamgriddb.com/game/5253715):
+﻿Imagenes del launcher descargadas de SteamGridDB (https://www.steamgriddb.com/game/5253715):
 - portada.png   hero 70883 de FireStarJutsu (https://www.steamgriddb.com/hero/70883)
-- logo.png      logo LOGO_PENDIENTE
+- logo.png      logo 105444 de Pisces Iscλriøt (https://www.steamgriddb.com/logo/105444)
 Ninja Gaiden II es de Koei Tecmo Games / Team NINJA.
